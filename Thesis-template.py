@@ -93,11 +93,11 @@ def show_ad_window():
     update_ad()
     ad_win.mainloop()
 
-# === Start Ad Thread ===
+#This starts the ad thread dynamics
 ad_thread = threading.Thread(target=show_ad_window, daemon=True)
 ad_thread.start()
 
-# === Opt-in Prompt ===
+#Consent/opt-in prompt
 def get_user_consent():
     global opt_in_given
     consent_win = tk.Tk()
