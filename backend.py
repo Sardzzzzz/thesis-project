@@ -132,7 +132,7 @@ def video_feed():
 @app.route('/ad-image')
 def ad_image():
     # Get the absolute path to the ads directory
-    ads_base = os.path.abspath(os.path.join(os.path.dirname(__file__), 'thesis-project-main', 'ads'))
+    ads_base = os.path.abspath(os.path.join(os.path.dirname(__file__), 'ads'))
     category = current_ad_category[0]
     ads_dir = os.path.join(ads_base, category)
     if not os.path.exists(ads_dir):
