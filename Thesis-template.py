@@ -13,6 +13,8 @@ import threading
 from PIL import Image, ImageTk, ImageSequence
 import tkinter as tk
 import time
+import hashlib
+import imagehash  #Added for perpetual hashing
 
 #Load the models trained by train_svm.py
 model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
@@ -37,6 +39,23 @@ ad_lock = threading.Lock()
 recent_predictions = []
 opt_in_given = False
 last_face_time = 0
+
+#Initialize the saved faces only once as much as possible.
+saved_face_hashes = set()
+saved_faces_dir = 'saved_faces'
+os.makedirs(saved_faces_dir, exist_ok=True)
+for category in os.listdir(saved_faces_dir):
+    category_dir = os.path.join(saved_faces_dir, category)
+    if os.path.isdir(category_dir):
+        for fname in os.listdir(category_dir):
+            if fname.endswith('.jpg'):
+                hashname = fname.split('.')[0]
+                saved_face_hashes.add(hashname)
+
+#Hash function part, updated with perceptual hash
+def hash_face(face_array):
+    pil_img = Image.fromarray(face_array)
+    return str(imagehash.average_hash(pil_img))
 
 #Idle frame
 idle_frame_path = os.path.join("ads", "idle")
@@ -155,11 +174,31 @@ while True:
 
         if face.shape[0] > 0 and face.shape[1] > 0:
             face_gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
-            face_resized = cv2.resize(face_gray, FACE_SIZE).flatten().reshape(1, -1)
+            face_resized = cv2.resize(face_gray, FACE_SIZE)
+            face_flattened = face_resized.flatten().reshape(1, -1)
+            face_for_hash = face_resized.copy()
 
-            gender_pred = svm_gender.predict(face_resized)[0]
-            age_pred = svm_age.predict(face_resized)[0]
+            gender_pred = svm_gender.predict(face_flattened)[0]
+            age_pred = svm_age.predict(face_flattened)[0]
             label = f"{gender_pred.lower()}_{age_pred.lower()}"
+
+            face_hash = hash_face(face_for_hash)
+
+            category_folder = os.path.join(saved_faces_dir, label)
+            os.makedirs(category_folder, exist_ok=True)
+
+            #Check if already saved (using perceptual hashing)
+            already_exists = False
+            for existing_hash in saved_face_hashes:
+                if imagehash.hex_to_hash(face_hash) - imagehash.hex_to_hash(existing_hash) <= 5:
+                    already_exists = True
+                    break
+
+            #Only save if not already saved
+            if not already_exists:
+                save_path = os.path.join(category_folder, f"{face_hash}.jpg")
+                cv2.imwrite(save_path, face)
+                saved_face_hashes.add(face_hash)
 
             recent_predictions.append(label)
             if len(recent_predictions) > FRAME_CONFIRMATION_COUNT:
