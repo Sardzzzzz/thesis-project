@@ -18,3 +18,16 @@ pip install opencv-python scikit-learn joblib numpy torch torchvision matplotlib
 -----------------------------------------------------------------------------------------------
 
 Run Train_svm > Thesis-template.py
+
+-----------------------------------------------------------------------------------------------
+
+NEW AD CATEGORIES
+inside ads/ 
+teen_male_dark/
+teen_male_light/
+teen_male_mid-dark/
+teen_male_mid-light/
+teen_female_dark/ 
+adult_female_mid-light/
+ETC.
+idle/
