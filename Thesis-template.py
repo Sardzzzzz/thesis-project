@@ -1,5 +1,4 @@
-#Added opt-in, black window when not agreeing with the consent, close camera after 10 seconds of no face detection (
-#might change this since I think there will be a lot of faces detected.), added window for advertisement and camera, working dynamically advertisements ( will change ).
+#Improved opt-in!, resolved past issue.
 
 """
 NEW AD CATEGORIES
@@ -64,6 +63,7 @@ recent_predictions = []
 opt_in_given = False
 last_face_time = 0
 saved_face_hashes = set()
+opted_in_hash = None  # New: stores the hash of the opted-in person
 
 #Initialize the saved faces only once as much as possible.
 for category in os.listdir(saved_faces_dir):
@@ -168,6 +168,11 @@ def extract_features(face_gray):
     
     return np.hstack([lbp_hist, hog_feat]).astype("float32").reshape(1, -1)
 
+#Tracker setup
+tracker = None
+tracking_face = False
+tracked_box = None
+
 #This is the main loop of the program
 cap = None
 while True:
@@ -179,6 +184,9 @@ while True:
         get_user_consent()
         last_face_time = time.time()
         cap = cv2.VideoCapture(0)
+        tracker = None
+        tracking_face = False
+        opted_in_hash = None  #reset on new opt-in
         continue
 
     ret, frame = cap.read()
@@ -191,20 +199,83 @@ while True:
     with torch.no_grad():
         outputs = model([image_tensor])[0]
 
-    #Select only the largest face (closest)
-    best_box = None
-    best_area = 0
+    #Detect all faces above the threshold
+    detected_faces = []
     for box, label_id, score in zip(outputs['boxes'], outputs['labels'], outputs['scores']):
         if label_id in FACE_CLASS_IDS and score > SCORE_THRESHOLD:
             x1, y1, x2, y2 = box.int().tolist()
-            area = (x2 - x1) * (y2 - y1)
-            if area > best_area:
-                best_area = area
-                best_box = (x1, y1, x2, y2)
+            detected_faces.append((x1, y1, x2, y2))
 
-    if best_box:
-        last_face_time = time.time()
-        x1, y1, x2, y2 = best_box
+    #Face tracker logic
+    if tracking_face:
+        #Update tracker
+        success, box = tracker.update(small_frame)
+        if success:
+            x1, y1, w, h = [int(v) for v in box]
+            x2, y2 = x1 + w, y1 + h
+            tracked_box = (x1, y1, x2, y2)
+            last_face_time = time.time()
+        else:
+            #Tracker failed, try to find the opted-in person again using hash, if there is same hash, track it again, if not, end.
+            found_face = False
+            for candidate in detected_faces:
+                cx1, cy1, cx2, cy2 = candidate
+                face_gray = cv2.cvtColor(small_frame[cy1:cy2, cx1:cx2], cv2.COLOR_BGR2GRAY)
+                face_resized = cv2.resize(face_gray, FACE_SIZE)
+                face_hash = hash_face(face_resized)
+                if opted_in_hash is not None and imagehash.hex_to_hash(face_hash) - imagehash.hex_to_hash(opted_in_hash) <= 5:
+                    tracker = cv2.TrackerKCF_create()
+                    tracker.init(small_frame, tuple(candidate))
+                    tracked_box = candidate
+                    tracking_face = True
+                    last_face_time = time.time()
+                    found_face = True
+                    break
+            if not found_face:
+                tracked_box = None
+                tracking_face = False
+    else:
+        #No tracker yet, look for the opted-in person (CLOSEST)
+        found_face = False
+        for candidate in detected_faces:
+            cx1, cy1, cx2, cy2 = candidate
+            face_gray = cv2.cvtColor(small_frame[cy1:cy2, cx1:cx2], cv2.COLOR_BGR2GRAY)
+            face_resized = cv2.resize(face_gray, FACE_SIZE)
+            face_hash = hash_face(face_resized)
+            if opted_in_hash is None:
+                #First time, register opted-in hash
+                opted_in_hash = face_hash
+                tracker = cv2.TrackerKCF_create()
+                tracker.init(small_frame, tuple(candidate))
+                tracked_box = candidate
+                tracking_face = True
+                last_face_time = time.time()
+                found_face = True
+                break
+            elif imagehash.hex_to_hash(face_hash) - imagehash.hex_to_hash(opted_in_hash) <= 5:
+                tracker = cv2.TrackerKCF_create()
+                tracker.init(small_frame, tuple(candidate))
+                tracked_box = candidate
+                tracking_face = True
+                last_face_time = time.time()
+                found_face = True
+                break
+        if not found_face:
+            tracked_box = None
+
+    #If no face detected for OPT_IN_TIMEOUT, go idle again
+    if tracked_box is None and time.time() - last_face_time > OPT_IN_TIMEOUT:
+        opt_in_given = False
+        if cap:
+            cap.release()
+            cap = None
+        tracker = None
+        tracking_face = False
+        continue
+
+    #Proceed with classification on tracked face only
+    if tracked_box:
+        x1, y1, x2, y2 = tracked_box
         face = small_frame[y1:y2, x1:x2]
 
         if face.shape[0] > 0 and face.shape[1] > 0:
@@ -255,12 +326,6 @@ while True:
             cv2.rectangle(small_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(small_frame, label_text, (x1, y1 - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-    else:
-        if time.time() - last_face_time > OPT_IN_TIMEOUT:
-            opt_in_given = False
-            cap.release()
-            cap = None
-            continue
 
     cv2.imshow("SmartTarget", small_frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):
