@@ -1,13 +1,11 @@
 #Improved live classification, FASTER-RCNN focuses on the person (this includes the body), added haar cascades to focus more on the face when it comes to bounding boxes.
+#REMOVED OPT-OUT, 10 majority vote classificaiton frame (POP UP CONFIRMATION.)
 """
 NEW AD CATEGORIES
 inside ads/ 
 teen_male_dark/
 teen_male_light/
-teen_male_mid-dark/
-teen_male_mid-light/
 teen_female_dark/ 
-adult_female_mid-light/
 ETC.
 idle/
 """
@@ -48,8 +46,7 @@ LBP_POINTS = 8 * LBP_RADIUS
 LBP_METHOD = 'uniform'
 AD_REFRESH_INTERVAL = 2000
 #Change if needed
-FRAME_CONFIRMATION_COUNT = 5
-OPT_IN_TIMEOUT = 3
+VOTE_FRAME_COUNT = 10
 saved_faces_dir = 'saved_faces'
 os.makedirs(saved_faces_dir, exist_ok=True)
 
@@ -66,6 +63,8 @@ opted_in_hash = None
 tracked_box = None  #stores (center_x, center_y, width, height)
 last_valid_face_time = time.time()
 last_face_seen_time = time.time()  #for grace period
+classification_locked = False
+opted_out = False
 
 #Initialize the saved faces only once as much as possible
 for category in os.listdir(saved_faces_dir):
@@ -135,14 +134,16 @@ threading.Thread(target=show_ad_window, daemon=True).start()
 
 #Consent/opt-in prompt
 def get_user_consent():
-    global opt_in_given
+    global opt_in_given, classification_locked, opted_out
     consent_win = tk.Tk()
     consent_win.title("Consent for opt-in!")
     tk.Label(consent_win, text="By clicking Agree, you allow access to the camera for age/gender/skin detection. Targeted Advertisement :)", wraplength=300).pack(pady=10)
 
     def agree():
-        global opt_in_given
+        global opt_in_given, classification_locked, opted_out
         opt_in_given = True
+        classification_locked = False
+        opted_out = False
         consent_win.destroy()
 
     tk.Button(consent_win, text="Agree", command=agree).pack(pady=5)
@@ -163,10 +164,38 @@ def extract_features(face_gray):
         hog_feat = hog_feat / np.linalg.norm(hog_feat)
     return np.hstack([lbp_hist, hog_feat]).astype("float32").reshape(1, -1)
 
+#Ask user confirmation popup
+def ask_user_confirmation(predicted_label):
+    confirm_win = tk.Tk()
+    confirm_win.title("Confirm Classification")
+    tk.Label(confirm_win, text=f"System classified you as: {predicted_label}\nIs this correct?", 
+             font=("Arial", 14), wraplength=300).pack(pady=10)
+
+    user_choice = {"answer": None}
+
+    def yes():
+        user_choice["answer"] = "yes"
+        confirm_win.destroy()
+
+    def no():
+        user_choice["answer"] = "no"
+        confirm_win.destroy()
+
+    def optout():
+        user_choice["answer"] = "optout"
+        confirm_win.destroy()
+
+    tk.Button(confirm_win, text="Yes", command=yes).pack(side="left", padx=10, pady=10)
+    tk.Button(confirm_win, text="No", command=no).pack(side="left", padx=10, pady=10)
+    tk.Button(confirm_win, text="Opt-out", command=optout).pack(side="right", padx=10, pady=10)
+
+    confirm_win.mainloop()
+    return user_choice["answer"]
+
 cap = None
 
 while True:
-    if not opt_in_given:
+    if not opt_in_given or opted_out:
         current_ad_category[0] = "idle"
         cv2.imshow("SmartTarget", idle_image)
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -177,6 +206,8 @@ while True:
         last_valid_face_time = time.time()
         last_face_seen_time = time.time()
         opted_in_hash = None
+        recent_predictions.clear()
+        classification_locked = False
         continue
 
     ret, frame = cap.read()
@@ -263,17 +294,8 @@ while True:
     else:
         display_box = None
 
-    #Timeout
-    if time.time() - last_valid_face_time > OPT_IN_TIMEOUT:
-        opt_in_given = False
-        tracked_box = None
-        if cap:
-            cap.release()
-            cap = None
-        continue
-
      #Proceed with classification on tracked face only
-    if display_box:
+    if display_box and not classification_locked and not opted_out:
         x1, y1, x2, y2 = display_box
         face = small_frame[y1:y2, x1:x2]
         if face.shape[0] > 0 and face.shape[1] > 0:
@@ -297,13 +319,29 @@ while True:
                 saved_face_hashes.add(face_hash)
 
             recent_predictions.append(label)
-             #Update ad immediately when consecutive predictions match
-            if len(recent_predictions) > FRAME_CONFIRMATION_COUNT:
+            if len(recent_predictions) > VOTE_FRAME_COUNT:
                 recent_predictions.pop(0)
 
-            if len(recent_predictions) == FRAME_CONFIRMATION_COUNT and all(x == recent_predictions[0] for x in recent_predictions):
-                with ad_lock:
-                    current_ad_category[0] = recent_predictions[0]
+            if len(recent_predictions) == VOTE_FRAME_COUNT:
+                final_label = max(set(recent_predictions), key=recent_predictions.count)
+                user_choice = ask_user_confirmation(final_label)
+                if user_choice == "yes":
+                    with ad_lock:
+                        current_ad_category[0] = final_label
+                    classification_locked = True
+                elif user_choice == "no":
+                    with ad_lock:
+                        current_ad_category[0] = "idle"
+                    recent_predictions.clear()
+                elif user_choice == "optout":
+                    opted_out = True
+                    opt_in_given = False
+                    with ad_lock:
+                        current_ad_category[0] = "idle"
+                    if cap:
+                        cap.release()
+                        cap = None
+                    continue
 
             cv2.rectangle(small_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(small_frame, label_text, (x1, y1 - 10),
