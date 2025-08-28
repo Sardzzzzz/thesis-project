@@ -1,10 +1,8 @@
-#Skin Tone SVM Training with ResNet + RGB Color Features + Augmentation
+# Skin Tone SVM Training (Just separated)
+
 import os
 import cv2
-import torch
-import torchvision
 import numpy as np
-from torchvision import transforms
 from sklearn.model_selection import train_test_split
 from sklearn.svm import SVC
 from sklearn.pipeline import Pipeline
@@ -12,106 +10,107 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
 from joblib import dump
-import random
+from skimage.feature import local_binary_pattern, hog
+from tqdm import tqdm
 
-DATASET_DIR = "dataset_skin"  #separate folder for skin tone dataset
-IMAGE_SIZE = (224, 224)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#Configs
+DATASET_DIR = "dataset_skin"   #folder structure: dataset_skin/dark, dataset_skin/light
+IMAGE_SIZE = (128, 128)
+LBP_RADIUS = 2
+LBP_POINTS = 8 * LBP_RADIUS
 
-#Load pretrained ResNet18
-resnet = torchvision.models.resnet18(weights=torchvision.models.ResNet18_Weights.DEFAULT)
-resnet = torch.nn.Sequential(*list(resnet.children())[:-1])
-resnet.eval()
-resnet.to(device)
-
-#Transform for images
-transform = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize(IMAGE_SIZE),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225])
-])
-
-def augment_image(img):
-    #Random brightness, contrast, and small rotation
-    if random.random() < 0.5:
-        factor = random.uniform(0.8, 1.2)
-        img = cv2.convertScaleAbs(img, alpha=factor, beta=0)
-    if random.random() < 0.5:
-        angle = random.uniform(-10, 10)
-        h, w = img.shape[:2]
-        M = cv2.getRotationMatrix2D((w/2, h/2), angle, 1)
-        img = cv2.warpAffine(img, M, (w, h))
-    return img
-
-def extract_features(img):
-    #Convert image to Pytorch tensor and extract ResNet features
-    img_t = transform(img).unsqueeze(0).to(device)
-    with torch.no_grad():
-        feat = resnet(img_t).cpu().numpy().flatten()
-    #Append the mean RGB as additional features for skin tone
-    mean_rgb = img.mean(axis=(0, 1))  # shape (3,)
-    return np.hstack([feat, mean_rgb])
-
-#For loading of dataset
 X = []
-y_skin = []
+skin_labels = []
 
-for folder in os.listdir(DATASET_DIR):
-    folder_path = os.path.join(DATASET_DIR, folder)
-    if not os.path.isdir(folder_path):
+#Feature extraction
+def extract_features(image):
+    #LBP
+    lbp = local_binary_pattern(image, LBP_POINTS, LBP_RADIUS, method="uniform")
+    lbp_hist, _ = np.histogram(lbp.ravel(), bins=np.arange(0, LBP_POINTS + 3),
+                               range=(0, LBP_POINTS + 2))
+    lbp_hist = lbp_hist.astype("float")
+    lbp_hist /= (lbp_hist.sum() + 1e-6)
+
+    #HOG
+    hog_feat = hog(image,
+                   orientations=9,
+                   pixels_per_cell=(16, 16),
+                   cells_per_block=(2, 2),
+                   block_norm='L2-Hys',
+                   transform_sqrt=True,
+                   feature_vector=True)
+    if np.linalg.norm(hog_feat) > 0:
+        hog_feat = hog_feat / np.linalg.norm(hog_feat)
+
+    return np.hstack([lbp_hist, hog_feat]).astype("float32")
+
+#Augment images
+def augment_image(img):
+    augmented = [img]
+
+    #Preprocess flips
+    augmented.append(cv2.flip(img, 1))
+
+    #Preprocess rotations
+    for angle in [-5, 5]:
+        M = cv2.getRotationMatrix2D((IMAGE_SIZE[0]//2, IMAGE_SIZE[1]//2), angle, 1)
+        rotated = cv2.warpAffine(img, M, IMAGE_SIZE)
+        augmented.append(rotated)
+
+    #For brightness adjustment
+    for alpha in [0.9, 1.1]:
+        bright = cv2.convertScaleAbs(img, alpha=alpha, beta=0)
+        augmented.append(bright)
+
+    return augmented
+
+#Load dataset_skin
+for folder in tqdm(os.listdir(DATASET_DIR)):
+    path = os.path.join(DATASET_DIR, folder)
+    if not os.path.isdir(path):
         continue
 
-    label = folder.lower()  #dark, light, mid-dark, mid-light
+    label = folder.lower()  #"dark" or "light"
 
-    for file in os.listdir(folder_path):
-        img_path = os.path.join(folder_path, file)
-        img = cv2.imread(img_path)
+    for file in os.listdir(path):
+        img_path = os.path.join(path, file)
+        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
         if img is None:
             continue
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        #Original image
-        features = extract_features(img)
-        X.append(features)
-        y_skin.append(label)
+        img = cv2.resize(img, IMAGE_SIZE)
 
-        #Augmented image (optional, can add 1–2 per original)
-        for _ in range(2):  # 2 augmentations per original
-            aug_img = augment_image(img.copy())
-            features_aug = extract_features(aug_img)
-            X.append(features_aug)
-            y_skin.append(label)
+        for img_variant in augment_image(img):
+            X.append(extract_features(img_variant))
+            skin_labels.append(label)
 
 X = np.array(X)
-y_skin = np.array(y_skin)
+y_skin = np.array(skin_labels)
 
 if len(X) == 0:
-    raise ValueError("No images found. Check your dataset_skin folder.")
+    raise ValueError("No images found in dataset_skin!")
 
-#Split into train and test
+#Split train/test
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y_skin, test_size=0.2, stratify=y_skin, random_state=42
+    X, y_skin, test_size=0.2, random_state=42, shuffle=True, stratify=y_skin
 )
 
-#SVM PIPELINE
-pipeline = Pipeline([
-    ("scaler", StandardScaler()),
-    ("pca", PCA(n_components=300)),
-    ("svm", SVC(C=10, gamma="scale", kernel="rbf", class_weight="balanced"))
+#SVM Pipeline
+skin_pipeline = Pipeline([
+    ('scaler', StandardScaler()),
+    ('pca', PCA(n_components=100)),
+    ('svm', SVC(C=1, gamma='scale', kernel='rbf',
+                class_weight='balanced', probability=True, random_state=42))
 ])
+skin_pipeline.fit(X_train, y_train)
 
-#Train
-model = pipeline.fit(X_train, y_train)
+#Evaluate results
+print("\nSkin Tone Model:")
+y_pred_skin = skin_pipeline.predict(X_test)
+print(classification_report(y_test, y_pred_skin))
+print("Accuracy:", accuracy_score(y_test, y_pred_skin))
+print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred_skin))
 
-#Report
-y_pred = model.predict(X_test)
-print("Skin Tone Classification Report:")
-print(classification_report(y_test, y_pred))
-print("Accuracy:", accuracy_score(y_test, y_pred))
-print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred))
-
-#Save model as .joblib
-dump(model, "svm_skin.joblib")
-print("Skin tone model saved as 'svm_skin.joblib'.")
+#Save to svm_skin.joblib
+dump(skin_pipeline, "svm_skin.joblib")
+print("\nSkin tone model saved successfully!")
