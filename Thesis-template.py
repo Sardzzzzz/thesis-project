@@ -26,7 +26,7 @@ import time
 import imagehash
 from skimage.feature import local_binary_pattern, hog
 
-# Load models
+#Load the models trained by train_svm.py
 model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
 model.eval()
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -67,21 +67,22 @@ tracked_box = None  #stores (center_x, center_y, width, height)
 last_valid_face_time = time.time()
 last_face_seen_time = time.time()  #for grace period
 
-#Load existing face hashes
+#Initialize the saved faces only once as much as possible
 for category in os.listdir(saved_faces_dir):
     category_dir = os.path.join(saved_faces_dir, category)
     if os.path.isdir(category_dir):
         for fname in os.listdir(category_dir):
             if fname.endswith('.jpg'):
                 saved_face_hashes.add(fname.split('.')[0])
-
+                
+#Hash function part, updated with perceptual hash
 def hash_face(face_array):
     pil_img = Image.fromarray(face_array)
     return str(imagehash.average_hash(pil_img))
-
+#Idle frame
 idle_image = np.zeros((480, 640, 3), dtype=np.uint8)
 
-#Ad window
+#Ad window which used Tkinter
 def show_ad_window():
     ad_win = tk.Tk()
     ad_win.title("Advertisements")
@@ -94,14 +95,14 @@ def show_ad_window():
     if os.path.exists(idle_gif_path):
         idle_gif = Image.open(idle_gif_path)
         idle_gif_frames = [ImageTk.PhotoImage(f.copy().resize((400, 400))) for f in ImageSequence.Iterator(idle_gif)]
-
-    last_displayed_category = ["idle"]
+    
+    last_displayed_category = ["idle"] #Track last category show
 
     def update_ad():
         nonlocal idle_gif_index
         with ad_lock:
             category = current_ad_category[0]
-
+        #Only update if category changed or idle gif frame changed
         if category != last_displayed_category[0] or category == "idle":
             folder_path = os.path.join("ads", category)
             ad_path = None
@@ -128,10 +129,11 @@ def show_ad_window():
 
     update_ad()
     ad_win.mainloop()
-
+    
+#This starts the ad thread dynamics
 threading.Thread(target=show_ad_window, daemon=True).start()
 
-#Consent prompt
+#Consent/opt-in prompt
 def get_user_consent():
     global opt_in_given
     consent_win = tk.Tk()
@@ -146,11 +148,14 @@ def get_user_consent():
     tk.Button(consent_win, text="Agree", command=agree).pack(pady=5)
     consent_win.mainloop()
 
+#Feature extraction for SVM
 def extract_features(face_gray):
+    #LBP
     lbp = local_binary_pattern(face_gray, LBP_POINTS, LBP_RADIUS, method=LBP_METHOD)
     lbp_hist, _ = np.histogram(lbp.ravel(), bins=np.arange(0, LBP_POINTS + 3), range=(0, LBP_POINTS + 2))
     lbp_hist = lbp_hist.astype("float")
     lbp_hist /= (lbp_hist.sum() + 1e-6)
+    #HOG
     hog_feat = hog(face_gray, orientations=9, pixels_per_cell=(16, 16),
                    cells_per_block=(2, 2), block_norm='L2-Hys', transform_sqrt=True,
                    feature_vector=True)
@@ -267,7 +272,7 @@ while True:
             cap = None
         continue
 
-    #Classification and display
+     #Proceed with classification on tracked face only
     if display_box:
         x1, y1, x2, y2 = display_box
         face = small_frame[y1:y2, x1:x2]
@@ -292,6 +297,7 @@ while True:
                 saved_face_hashes.add(face_hash)
 
             recent_predictions.append(label)
+             #Update ad immediately when consecutive predictions match
             if len(recent_predictions) > FRAME_CONFIRMATION_COUNT:
                 recent_predictions.pop(0)
 
@@ -306,7 +312,7 @@ while True:
     cv2.imshow("SmartTarget", small_frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
-#End
+
 if cap:
     cap.release()
 cv2.destroyAllWindows()
