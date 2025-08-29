@@ -20,7 +20,7 @@ app = Flask(__name__)
 url = os.getenv("DATABASE_URL")
 connection = psycopg2.connect(url)
 
-INSERT_PRODUCT = ("""
+INSERT_SALE_RECORD = ("""
     INSERT INTO products (product, price, demographic, used, date)
     VALUES (%s, %s, %s, %s, %s) RETURNING id;
 """)
@@ -179,7 +179,7 @@ def createSale():
     date = data["date"]
     with connection:
         with connection.cursor() as cursor:
-            cursor.execute(INSERT_PRODUCT, ((product, price, demographic, used, date,)))
+            cursor.execute(INSERT_SALE_RECORD, ((product, price, demographic, used, date,)))
             saleID = cursor.fetchone()[0]
     return {"id": saleID, "message": f"Product sold on {date}"}, 201
 
