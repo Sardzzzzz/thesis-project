@@ -25,6 +25,8 @@ INSERT_PRODUCT = ("""
     VALUES (%s, %s, %s, %s, %s) RETURNING id;
 """)
 
+FETCH_SALES = ("SELECT product, price, demographic, used, date FROM products;")
+
 CORS(app)
 
 # --- Model Loading ---
@@ -166,6 +168,7 @@ def ad_image():
 def home():
     return "Home page"
 
+#Record Sales Endpoint
 @app.post('/api/sales')
 def createSale():
     data = request.get_json()
@@ -180,6 +183,23 @@ def createSale():
             saleID = cursor.fetchone()[0]
     return {"id": saleID, "message": f"Product sold on {date}"}, 201
 
+@app.get('/api/get-sales')
+def getSales():
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(FETCH_SALES)
+            rows = cursor.fetchall()
+    sales = [
+        {
+            "product": row[0],
+            "price": float(row[1]),
+            "demographic": row[2],
+            "used": row[3],
+            "date": row[4].isoformat()
+        }
+        for row in rows
+    ]
+    return jsonify(sales)
 
 if __name__ == '__main__':
     app.run(port=5000, debug=True, use_reloader=False)
