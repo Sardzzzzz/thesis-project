@@ -9,6 +9,11 @@ import time
 import os
 from flask import Flask, Response, request, jsonify, send_file
 from flask_cors import CORS
+import psycopg2
+from dotenv import load_dotenv
+
+#-- Load Environment Variables --
+load_dotenv()
 
 # --- Flask Setup ---
 app = Flask(__name__)
@@ -150,3 +155,7 @@ def ad_image():
 
 if __name__ == '__main__':
     app.run(port=5000, debug=True, use_reloader=False)
+
+#API ENDPOINTS FOR ADMIN
+
+
