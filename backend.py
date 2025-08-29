@@ -18,7 +18,12 @@ load_dotenv()
 # --- Flask Setup ---
 app = Flask(__name__)
 url = os.getenv("DATABASE_URL")
-connection = psycopg2(url)
+connection = psycopg2.connect(url)
+
+INSERT_PRODUCT = ("""
+    INSERT INTO products (product, price, demographic, used, date)
+    VALUES (%s, %s, %s, %s, %s) RETURNING id;
+""")
 
 CORS(app)
 
@@ -157,10 +162,24 @@ def ad_image():
     return send_file(img_path, mimetype='image/jpeg')
 
 #API ENDPOINTS FOR ADMIN 
-
-@app.route('/', methods=['GET', 'POST'])
+@app.route('/', methods=['GET'])
 def home():
-    return "Gago"
+    return "Home page"
+
+@app.post('/api/sales')
+def createSale():
+    data = request.get_json()
+    product = data["product"]
+    price = data["price"]
+    demographic = data["demographic"]
+    used = data["used"]
+    date = data["date"]
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(INSERT_PRODUCT, ((product, price, demographic, used, date,)))
+            saleID = cursor.fetchone()[0]
+    return {"id": saleID, "message": f"Product sold on {date}"}, 201
+
 
 if __name__ == '__main__':
     app.run(port=5000, debug=True, use_reloader=False)
