@@ -17,6 +17,9 @@ load_dotenv()
 
 # --- Flask Setup ---
 app = Flask(__name__)
+url = os.getenv("DATABASE_URL")
+connection = psycopg2(url)
+
 CORS(app)
 
 # --- Model Loading ---
@@ -153,9 +156,14 @@ def ad_image():
     img_path = os.path.join(ads_dir, images[0])  # always serve the first image (not random)
     return send_file(img_path, mimetype='image/jpeg')
 
+#API ENDPOINTS FOR ADMIN 
+
+@app.route('/', methods=['GET', 'POST'])
+def home():
+    return "Gago"
+
 if __name__ == '__main__':
     app.run(port=5000, debug=True, use_reloader=False)
 
-#API ENDPOINTS FOR ADMIN
 
 
