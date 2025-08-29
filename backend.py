@@ -20,6 +20,7 @@ app = Flask(__name__)
 url = os.getenv("DATABASE_URL")
 connection = psycopg2.connect(url)
 
+#--POSTGRESQL QUERIES--
 INSERT_SALE_RECORD = ("""
     INSERT INTO products (product, price, demographic, used, date)
     VALUES (%s, %s, %s, %s, %s) RETURNING id;
