@@ -1,60 +1,214 @@
-import cv2
-import torch
-import torchvision
+# ====================================================
+# Imports
+# ====================================================
+import os, time, random, threading
+from flask import Flask, Response, jsonify, send_file, request
+from flask_cors import CORS
+import cv2, numpy as np, torch, torchvision
 from torchvision.transforms import functional as F
 from joblib import load
-import numpy as np
-import threading
-import time
-import os
-from flask import Flask, Response, request, jsonify, send_file
-from flask_cors import CORS
+from PIL import Image
+import imagehash
+from skimage.feature import local_binary_pattern, hog
 import psycopg2
 from dotenv import load_dotenv
 
-#-- Load Environment Variables --
 load_dotenv()
 
-# --- Flask Setup ---
+
+# ---------------- Config / Toggles ----------------
+USE_RESNET_FOR_AGE_GENDER = False  # set True only if you have *_resnet.joblib SVMs
+FACE_CLASS_IDS = [1]               # COCO person class id for Faster-RCNN (person)
+SCORE_THRESHOLD = 0.7
+FACE_SIZE = (128, 128)
+LBP_RADIUS = 2
+LBP_POINTS = 8 * LBP_RADIUS
+LBP_METHOD = 'uniform'
+FRAME_CONFIRMATION_COUNT = 5  # majority vote frame window (tweak to taste)
+HASH_DISTANCE_TOL = 5         # perceptual hash distance threshold
+OPT_IN_TIMEOUT = 3.0          # seconds to reset opted-in person if lost
+FACE_LOST_GRACE = 1.0         # seconds to keep box after face disappears (smoothing)
+
+# ---------------- Paths ----------------
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = PROJECT_DIR
+
+ADS_DIR = os.path.join(MODEL_DIR, "public/ads")
+SAVED_FACES_DIR = os.path.join(MODEL_DIR, "saved_faces")
+os.makedirs(SAVED_FACES_DIR, exist_ok=True)
+
+# ---------------- Flask ----------------
 app = Flask(__name__)
 url = os.getenv("DATABASE_URL")
 connection = psycopg2.connect(url)
-
 CORS(app)
 
-# --- Model Loading ---
+current_attributes = {
+    "age": "Unknown",
+    "gender": "Unknown",
+    "skin": "Unknown"
+}
+
+# ---------------- Models ----------------
+# Detector (Faster-RCNN pretrained)
 model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
 model.eval()
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model.to(device)
 
-svm_gender = load("svm_gender.joblib")
-svm_age = load("svm_age.joblib")
+# Load SVMs (use joblib files in MODEL_DIR)
+svm_gender = None
+svm_age = None
+svm_skin = None
 
-# --- Constants ---
-FACE_CLASS_IDS = [1]
-SCORE_THRESHOLD = 0.7
-FACE_SIZE = (128, 128)
-FRAME_CONFIRMATION_COUNT = 3
-OPT_IN_TIMEOUT = 10
+def try_load_joblib(name):
+    path = os.path.join(MODEL_DIR, name)
+    if os.path.exists(path):
+        try:
+            return load(path)
+        except Exception as e:
+            print(f"Error loading {path}:", e)
+            return None
+    else:
+        print(f"File not found: {path}")
+        return None
 
-# --- Shared State ---
+svm_gender = try_load_joblib("svm_gender.joblib")
+svm_age    = try_load_joblib("svm_age.joblib")
+svm_skin   = try_load_joblib("svm_skin.joblib")
+print("Loaded SVMs:", svm_gender is not None, svm_age is not None, svm_skin is not None)
+
+# Optional ResNet-based SVMs for Age/Gender
+svm_gender_resnet = None
+svm_age_resnet = None
+try:
+    path_g = os.path.join(MODEL_DIR, "svm_gender_resnet.joblib")
+    path_a = os.path.join(MODEL_DIR, "svm_age_resnet.joblib")
+    if os.path.exists(path_g) and os.path.exists(path_a):
+        svm_gender_resnet = load(path_g)
+        svm_age_resnet = load(path_a)
+        USE_RESNET_FOR_AGE_GENDER = True
+except Exception as e:
+    print("ResNet SVMs not loaded:", e)
+    USE_RESNET_FOR_AGE_GENDER = False
+
+# ResNet18 (feature extractor)
+resnet_skin = torchvision.models.resnet18(weights=torchvision.models.ResNet18_Weights.DEFAULT)
+resnet_skin = torch.nn.Sequential(*list(resnet_skin.children())[:-1])  # global avg pool output
+resnet_skin.eval()
+resnet_skin.to(device)
+
+# Haar cascade for faces
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+
+# ---------------- Shared State ----------------
 current_ad_category = ["idle"]
+ad_lock = threading.Lock()
 recent_predictions = []
-last_face_time = time.time()
-consent = False
+saved_face_hashes = set()
+opted_in_hash = None  # holds the perceptual hash of current tracked person
+tracked_box = None    # (cx, cy, w, h)
+last_valid_face_time = time.time()
+last_face_seen_time = time.time()
+
+# New global: locked category (None means unlocked)
+locked_category = None
+
+# Camera + latest_frame sharing
 camera = cv2.VideoCapture(0)
+latest_frame = None
+latest_frame_lock = threading.Lock()
 
-# --- Face Detection Thread ---
+# Initialize saved faces hash set from disk
+for category in os.listdir(SAVED_FACES_DIR):
+    category_dir = os.path.join(SAVED_FACES_DIR, category)
+    if os.path.isdir(category_dir):
+        for fname in os.listdir(category_dir):
+            if fname.lower().endswith(('.jpg', '.jpeg', '.png')):
+                saved_face_hashes.add(fname.split('.')[0])
+
+# ---------------- Utils ----------------
+def hash_face(face_array):
+    try:
+        pil_img = Image.fromarray(face_array)
+        return str(imagehash.average_hash(pil_img))
+    except Exception as e:
+        print("hash_face error:", e)
+        return str(random.getrandbits(64))
+
+def extract_lbp_hog(face_gray):
+    lbp = local_binary_pattern(face_gray, P=16, R=2, method="uniform")
+    lbp_hist, _ = np.histogram(
+        lbp.ravel(),
+        bins=np.arange(0, 16 + 3),
+        range=(0, 16 + 2)
+    )
+    lbp_hist = lbp_hist.astype("float")
+    lbp_hist /= (lbp_hist.sum() + 1e-6)
+
+    hog_feat = hog(
+        face_gray,
+        orientations=9,
+        pixels_per_cell=(16, 16),
+        cells_per_block=(2, 2),
+        block_norm="L2-Hys",
+        transform_sqrt=True,
+        feature_vector=True,
+    )
+    hog_feat /= (np.linalg.norm(hog_feat) + 1e-6)
+
+    return np.hstack([lbp_hist, hog_feat]).astype("float32").reshape(1, -1)
+
+def resnet_embed(face_bgr_224):
+    face_rgb = cv2.cvtColor(face_bgr_224, cv2.COLOR_BGR2RGB)
+    tensor = torchvision.transforms.functional.to_tensor(face_rgb).unsqueeze(0).to(device)
+    with torch.no_grad():
+        feat = resnet_skin(tensor).cpu().numpy().reshape(-1)
+    return feat
+
+def classify_face(face_bgr):
+    age_pred, gender_pred, skin_pred = "Unknown", "Unknown", "Unknown"
+
+    try:
+        if USE_RESNET_FOR_AGE_GENDER and svm_gender_resnet and svm_age_resnet:
+            face_224 = cv2.resize(face_bgr, (224, 224))
+            emb = resnet_embed(face_224).reshape(1, -1)
+            try:
+                gender_pred = svm_gender_resnet.predict(emb)[0]
+                age_pred = svm_age_resnet.predict(emb)[0]
+            except Exception:
+                gray = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2GRAY)
+                gray_resized = cv2.resize(gray, FACE_SIZE)
+                feats = extract_lbp_hog(gray_resized)
+                gender_pred = svm_gender.predict(feats)[0]
+                age_pred = svm_age.predict(feats)[0]
+        else:
+            gray = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2GRAY)
+            gray_resized = cv2.resize(gray, FACE_SIZE)
+            feats = extract_lbp_hog(gray_resized)
+            gender_pred = svm_gender.predict(feats)[0]
+            age_pred = svm_age.predict(feats)[0]
+
+        if svm_skin:
+            face_gray = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2GRAY)
+            feats_skin = extract_lbp_hog(cv2.resize(face_gray, FACE_SIZE))
+            skin_pred = svm_skin.predict(feats_skin)[0]
+    except Exception as e:
+        print("Classification error:", e)
+
+    return age_pred, gender_pred, skin_pred
+
+# ---------------- Detection Thread ----------------
 def face_detection_loop():
-    global last_face_time, consent
-    while True:
-        if not consent:
-            time.sleep(1)
-            continue
+    global opted_in_hash, recent_predictions, current_ad_category, tracked_box
+    global last_valid_face_time, last_face_seen_time, camera, latest_frame, locked_category
 
+    alpha = 0.7  # smoothing factor for tracked_box
+
+    while True:
         ret, frame = camera.read()
         if not ret:
+            time.sleep(0.01)
             continue
 
         small_frame = cv2.resize(frame, (640, 480))
@@ -63,98 +217,210 @@ def face_detection_loop():
         with torch.no_grad():
             outputs = model([image_tensor])[0]
 
-        best_box = None
-        best_area = 0
-
-        for box, label, score in zip(outputs['boxes'], outputs['labels'], outputs['scores']):
-            if label in FACE_CLASS_IDS and score > SCORE_THRESHOLD:
+        detected_persons = []
+        for box, label_id, score in zip(outputs['boxes'], outputs['labels'], outputs['scores']):
+            if int(label_id) in FACE_CLASS_IDS and float(score) > SCORE_THRESHOLD:
                 x1, y1, x2, y2 = box.int().tolist()
-                area = (x2 - x1) * (y2 - y1)
-                if area > best_area:
-                    best_area = area
-                    best_box = (x1, y1, x2, y2)
+                x1 = max(0, min(x1, small_frame.shape[1]-1))
+                x2 = max(0, min(x2, small_frame.shape[1]-1))
+                y1 = max(0, min(y1, small_frame.shape[0]-1))
+                y2 = max(0, min(y2, small_frame.shape[0]-1))
+                if x2 > x1 and y2 > y1:
+                    detected_persons.append((x1, y1, x2, y2))
 
-        if best_box:
-            last_face_time = time.time()
-            x1, y1, x2, y2 = best_box
-            face = small_frame[y1:y2, x1:x2]
+        face_found = None
+        for (px1, py1, px2, py2) in detected_persons:
+            person_crop = small_frame[py1:py2, px1:px2]
+            if person_crop.size == 0:
+                continue
+            gray_crop = cv2.cvtColor(person_crop, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray_crop, scaleFactor=1.05, minNeighbors=5, minSize=(50, 50))
+            if len(faces) == 0:
+                continue
 
-            if face.shape[0] > 0 and face.shape[1] > 0:
-                face_gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
-                face_resized = cv2.resize(face_gray, FACE_SIZE).flatten().reshape(1, -1)
+            fx, fy, fw, fh = faces[0]
+            pad_w, pad_h = int(fw * 0.3), int(fh * 0.3)
+            fx1 = max(px1 + fx - pad_w, 0)
+            fy1 = max(py1 + fy - pad_h, 0)
+            fx2 = min(px1 + fx + fw + pad_w, small_frame.shape[1])
+            fy2 = min(py1 + fy + fh + pad_h, small_frame.shape[0])
 
-                gender_pred = svm_gender.predict(face_resized)[0]
-                age_pred = svm_age.predict(face_resized)[0]
-                label = f"{gender_pred.lower()}_{age_pred.lower()}"
+            face_crop = small_frame[fy1:fy2, fx1:fx2]
+            try:
+                face_gray_for_hash = cv2.resize(cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY), FACE_SIZE)
+            except Exception:
+                continue
 
-                recent_predictions.append(label)
-                if len(recent_predictions) > FRAME_CONFIRMATION_COUNT:
-                    recent_predictions.pop(0)
+            candidate_hash = hash_face(face_gray_for_hash)
 
-                if recent_predictions.count(recent_predictions[0]) == FRAME_CONFIRMATION_COUNT:
-                    if current_ad_category[0] != recent_predictions[0]:
-                        current_ad_category[0] = recent_predictions[0]
-        else:
-            # No face detected
-            if time.time() - last_face_time > OPT_IN_TIMEOUT:
-                consent = False
-                current_ad_category[0] = "idle"
+            if opted_in_hash is None:
+                opted_in_hash = candidate_hash
+                face_found = (fx1, fy1, fx2, fy2)
+                last_valid_face_time = time.time()
+                break
+            else:
+                try:
+                    hash_diff = imagehash.hex_to_hash(candidate_hash) - imagehash.hex_to_hash(opted_in_hash)
+                    if hash_diff <= HASH_DISTANCE_TOL:
+                        face_found = (fx1, fy1, fx2, fy2)
+                        last_valid_face_time = time.time()
+                        break
+                except Exception:
+                    pass
 
-# Start background detection
+        if face_found:
+            fx1, fy1, fx2, fy2 = face_found
+            f_cx = (fx1 + fx2) / 2.0
+            f_cy = (fy1 + fy2) / 2.0
+            f_w = float(fx2 - fx1)
+            f_h = float(fy2 - fy1)
+
+            if tracked_box is None:
+                tracked_box = (f_cx, f_cy, f_w, f_h)
+            else:
+                cx, cy, w, h = tracked_box
+                cx = alpha * cx + (1 - alpha) * f_cx
+                cy = alpha * cy + (1 - alpha) * f_cy
+                w = alpha * w + (1 - alpha) * f_w
+                h = alpha * h + (1 - alpha) * f_h
+                tracked_box = (cx, cy, w, h)
+
+            last_face_seen_time = time.time()
+
+        if tracked_box is not None:
+            cx, cy, w, h = tracked_box
+            x1 = int(max(0, cx - w / 2.0))
+            y1 = int(max(0, cy - h / 2.0))
+            x2 = int(min(small_frame.shape[1] - 1, cx + w / 2.0))
+            y2 = int(min(small_frame.shape[0] - 1, cy + h / 2.0))
+
+            if x2 > x1 and y2 > y1:
+                face = small_frame[y1:y2, x1:x2]
+                if face.size != 0:
+                    age_pred, gender_pred, skin_pred = classify_face(face)
+                    if not skin_pred or skin_pred.strip().lower() in ["", "unknown", "none"]:
+                        skin_pred = "Unclassified"
+
+                    current_attributes["age"] = age_pred
+                    current_attributes["gender"] = gender_pred
+                    current_attributes["skin"] = skin_pred
+
+                    label = f"{age_pred.lower()}_{gender_pred.lower()}_{skin_pred.lower()}"
+
+                    # Save face deduplication
+                    try:
+                        face_gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
+                        face_resized = cv2.resize(face_gray, FACE_SIZE)
+                        face_phash = hash_face(face_resized)
+
+                        category_folder = os.path.join(SAVED_FACES_DIR, label)
+                        os.makedirs(category_folder, exist_ok=True)
+
+                        already_exists = False
+                        for existing_hash in saved_face_hashes:
+                            try:
+                                if imagehash.hex_to_hash(face_phash) - imagehash.hex_to_hash(existing_hash) <= HASH_DISTANCE_TOL:
+                                    already_exists = True
+                                    break
+                            except:
+                                pass
+
+                        if not already_exists:
+                            save_path = os.path.join(category_folder, f"{face_phash}.jpg")
+                            cv2.imwrite(save_path, face)
+                            saved_face_hashes.add(face_phash)
+                    except Exception as e:
+                        print("Save face error:", e)
+
+                    # Append prediction (sliding window)
+                    recent_predictions.append(label)
+                    if len(recent_predictions) > FRAME_CONFIRMATION_COUNT:
+                        recent_predictions.pop(0)
+
+                    # Majority check: only set a locked category if one isn't already locked
+                    if len(recent_predictions) == FRAME_CONFIRMATION_COUNT and all(x == recent_predictions[0] for x in recent_predictions):
+                        majority = recent_predictions[0]
+                        with ad_lock:
+                            if locked_category is None:
+                                locked_category = majority
+                                current_ad_category[0] = majority
+                            else:
+                                # already locked, do nothing (maintain locked_category)
+                                pass
+
+        with latest_frame_lock:
+            latest_frame = small_frame.copy()
+
+        time.sleep(0.005)
+
 threading.Thread(target=face_detection_loop, daemon=True).start()
 
-# --- Flask Routes ---
-
-@app.route('/consent', methods=['GET', 'POST'])
-def consent_route():
-    global consent
-    if request.method == 'POST':
-        data = request.get_json()
-        consent = bool(data.get('consent', False))
-        if not consent:
-            current_ad_category[0] = "idle"
-        return jsonify({"success": True, "consent": consent})
-    return jsonify({"consent": consent})
+# ---------------- Routes ----------------
+@app.route('/attributes', methods=['GET'])
+def get_attributes():
+    return jsonify(current_attributes)
 
 @app.route('/ad-category', methods=['GET'])
 def ad_category_route():
-    return jsonify({"category": current_ad_category[0]})
+    # If locked_category is set, return it. Else return the current ad category.
+    with ad_lock:
+        if locked_category is not None:
+            return jsonify({"category": locked_category})
+        return jsonify({"category": current_ad_category[0]})
+
+@app.route('/reset', methods=['POST'])
+def reset_route():
+    global opted_in_hash, tracked_box, recent_predictions, current_attributes, locked_category
+    opted_in_hash = None
+    tracked_box = None
+    recent_predictions = []
+    current_attributes = {"age": "Unknown", "gender": "Unknown", "skin": "Unknown"}
+    with ad_lock:
+        current_ad_category[0] = "idle"
+        locked_category = None
+    return jsonify({"ok": True})
 
 @app.route('/video_feed')
 def video_feed():
     def gen_frames():
+        global latest_frame
         while True:
-            if not consent:
-                frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            else:
-                ret, frame = camera.read()
-                if not ret:
-                    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-
-            ret, buffer = cv2.imencode('.jpg', frame)
-            frame = buffer.tobytes()
+            with latest_frame_lock:
+                frame = None if latest_frame is None else latest_frame.copy()
+            if frame is None:
+                idle = np.zeros((480, 640, 3), dtype=np.uint8)
+                _, buffer = cv2.imencode('.jpg', idle)
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                time.sleep(0.05)
+                continue
+            _, buffer = cv2.imencode('.jpg', frame)
             yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            time.sleep(0.03)
     return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/ad-image')
 def ad_image():
-    # Get the absolute path to the ads directory
-    ads_base = os.path.abspath(os.path.join(os.path.dirname(__file__), 'ads'))
-    category = current_ad_category[0]
-    ads_dir = os.path.join(ads_base, category)
-    if not os.path.exists(ads_dir):
-        # fallback to idle ad
-        ads_dir = os.path.join(ads_base, 'idle')
-    images = [f for f in os.listdir(ads_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif'))]
+    with ad_lock:
+        category = current_ad_category[0]
+
+    cat_dir = os.path.join(ADS_DIR, category)
+    if not os.path.isdir(cat_dir):
+        cat_dir = os.path.join(ADS_DIR, 'idle')
+
+    try:
+        images = [f for f in os.listdir(cat_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif'))]
+    except Exception:
+        images = []
+
     if not images:
-        # fallback to idle ad if no images in category
-        ads_dir = os.path.join(ads_base, 'idle')
-        images = [f for f in os.listdir(ads_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif'))]
-        if not images:
-            return '', 404
-    img_path = os.path.join(ads_dir, images[0])  # always serve the first image (not random)
-    return send_file(img_path, mimetype='image/jpeg')
+        idle_dir = os.path.join(ADS_DIR, 'idle')
+        images = [f for f in os.listdir(idle_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif'))]
+        cat_dir = idle_dir
+
+    selected = random.choice(images)
+    return send_file(os.path.join(cat_dir, selected), mimetype='image/jpeg')
 
 
 #--POSTGRESQL QUERIES--
