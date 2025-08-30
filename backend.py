@@ -20,30 +20,6 @@ app = Flask(__name__)
 url = os.getenv("DATABASE_URL")
 connection = psycopg2.connect(url)
 
-#--POSTGRESQL QUERIES--
-
-INSERT_DEMOGRAPHIC_RECORD = ("""
-    INSERT INTO demographics (age_range, skin_color, gender)
-    VALUES (%s, %s, %s)
-    RETURNING id;
-    """
-)
-INSERT_SALE_RECORD = ("""
-    INSERT INTO products (product, price, demographic, used, date)
-    VALUES (%s, %s, %s, %s, %s) RETURNING id;
-""")
-
-FETCH_SALES = ("SELECT * FROM products;")
-
-FETCH_DEMOGRAPHICS = (""" 
-SELECT age_range || '-' || skin_color || '-' || gender AS demographic,
-                       COUNT(*) AS total
-                FROM demographics
-                GROUP BY age_range, skin_color, gender;
-""")
-
-FETCH_FEEDBACK = "SELECT email, message, date FROM feedback;"
-
 CORS(app)
 
 # --- Model Loading ---
@@ -180,6 +156,30 @@ def ad_image():
     img_path = os.path.join(ads_dir, images[0])  # always serve the first image (not random)
     return send_file(img_path, mimetype='image/jpeg')
 
+
+#--POSTGRESQL QUERIES--
+
+INSERT_DEMOGRAPHIC_RECORD = ("""
+    INSERT INTO demographics (age_range, skin_color, gender)
+    VALUES (%s, %s, %s)
+    RETURNING id;
+    """
+)
+INSERT_SALE_RECORD = ("""
+    INSERT INTO products (product, price, demographic, used, date)
+    VALUES (%s, %s, %s, %s, %s) RETURNING id;
+""")
+
+FETCH_SALES = ("SELECT * FROM products;")
+
+FETCH_DEMOGRAPHICS = (""" 
+    SELECT age_range || '-' || skin_color || '-' || gender AS demographic,
+    COUNT(*) AS total
+    FROM demographics
+    GROUP BY age_range, skin_color, gender;
+""")
+
+FETCH_FEEDBACK = "SELECT email, message, date FROM feedback;"
 #--API ENDPOINT FOR MAIN SYSTEM--
 #INSERT DEMOGRAPHIC endpoint
 @app.post('/api/demographic')
