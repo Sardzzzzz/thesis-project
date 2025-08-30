@@ -15,6 +15,9 @@ import imagehash
 from skimage.feature import local_binary_pattern, hog
 import smtplib
 from email.mime.text import MIMEText
+import base64
+from PIL import Image
+import io
 
 # ---------------- Config / Toggles ----------------
 USE_RESNET_FOR_AGE_GENDER = False
@@ -46,6 +49,7 @@ current_ad_category = ["idle"]
 ad_lock = threading.Lock()
 recent_predictions = []
 saved_face_hashes = set()
+saved_locked_categories = set()  # Track saved faces per locked category
 opted_in_hash = None
 tracked_box = None
 last_valid_face_time = time.time()
@@ -307,40 +311,34 @@ def face_detection_loop():
 
                     label = f"{age_pred.lower()}_{gender_pred.lower()}_{skin_pred.lower()}"
 
-                    try:
-                        face_gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
-                        face_resized = cv2.resize(face_gray, FACE_SIZE)
-                        face_phash = hash_face(face_resized)
-
-                        category_folder = os.path.join(SAVED_FACES_DIR, label)
-                        os.makedirs(category_folder, exist_ok=True)
-
-                        already_exists = False
-                        for existing_hash in saved_face_hashes:
-                            try:
-                                if imagehash.hex_to_hash(face_phash) - imagehash.hex_to_hash(existing_hash) <= HASH_DISTANCE_TOL:
-                                    already_exists = True
-                                    break
-                            except:
-                                pass
-
-                        if not already_exists:
-                            save_path = os.path.join(category_folder, f"{face_phash}.jpg")
-                            cv2.imwrite(save_path, face)
-                            saved_face_hashes.add(face_phash)
-                    except Exception as e:
-                        print("Save face error:", e)
-
+                    # Track recent predictions
                     recent_predictions.append(label)
                     if len(recent_predictions) > FRAME_CONFIRMATION_COUNT:
                         recent_predictions.pop(0)
 
+                    # Lock category and save face only once
                     if len(recent_predictions) == FRAME_CONFIRMATION_COUNT and all(x == recent_predictions[0] for x in recent_predictions):
                         majority = recent_predictions[0]
                         with ad_lock:
                             if locked_category is None:
                                 locked_category = majority
                                 current_ad_category[0] = majority
+
+                                # Save face only once per locked category
+                                if locked_category not in saved_locked_categories:
+                                    try:
+                                        face_gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
+                                        face_resized = cv2.resize(face_gray, FACE_SIZE)
+                                        face_phash = hash_face(face_resized)
+                                        category_folder = os.path.join(SAVED_FACES_DIR, locked_category)
+                                        os.makedirs(category_folder, exist_ok=True)
+                                        save_path = os.path.join(category_folder, f"{face_phash}.jpg")
+                                        cv2.imwrite(save_path, face)
+                                        saved_face_hashes.add(face_phash)
+                                        saved_locked_categories.add(locked_category)
+                                        print(f"Saved face for locked category: {locked_category}")
+                                    except Exception as e:
+                                        print("Save face error:", e)
 
         with latest_frame_lock:
             latest_frame = small_frame.copy()
@@ -350,9 +348,68 @@ def face_detection_loop():
 threading.Thread(target=face_detection_loop, daemon=True).start()
 
 # ---------------- Email Utils ----------------
-def send_google_form_email(to_email, category):
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+
+def send_google_form_email_with_all_images(to_email, category):
+    """
+    Sends email with all images in the category folder, showing inline preview with name and price,
+    and attaches full-size images.
+    """
     try:
-        time.sleep(EMAIL_SEND_DELAY)
+        category_dir = None
+        for folder in os.listdir(ADS_DIR):
+            if folder.lower() == category.lower():
+                category_dir = os.path.join(ADS_DIR, folder)
+                break
+        if category_dir is None or not os.path.exists(category_dir):
+            category_dir = os.path.join(ADS_DIR, "idle")
+
+        # Get all images
+        img_files = [f for f in os.listdir(category_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))]
+
+        # Create email
+        msg = MIMEMultipart()
+        msg['Subject'] = f"Confirm Your Ad Preferences - {category}"
+        msg['From'] = DEL_EMAIL
+        msg['To'] = to_email
+
+        # Inline previews with name and price
+        img_html = ""
+        for fname in img_files:
+            path = os.path.join(category_dir, fname)
+            name, price = "Unknown", "Unknown"
+            try:
+                # Regex parse filename: name_price.ext
+                import re
+                match = re.match(r"(.+)_([\d.]+)$", fname.rsplit('.', 1)[0])
+                if match:
+                    name = match.group(1).replace("_", " ")
+                    price = f"${float(match.group(2)):.2f}"
+                else:
+                    name = fname.rsplit('.', 1)[0].replace("_", " ")
+                    price = "Unknown"
+            except Exception as e:
+                print("Filename parse error:", e)
+
+            try:
+                with Image.open(path) as img:
+                    img.thumbnail((200, 200))
+                    buf = io.BytesIO()
+                    img.convert("RGB").save(buf, format="JPEG")
+                    encoded = base64.b64encode(buf.getvalue()).decode()
+                    img_html += f"""
+                    <div style="margin:5px; text-align:center;">
+                        <img src="data:image/jpeg;base64,{encoded}" />
+                        <br><b>{name}</b>
+                        <br>{price}
+                    </div>
+                    """
+            except Exception as e:
+                print("Inline image preview error:", e)
+
+        # HTML body
         body = f"""
         <html>
             <body>
@@ -360,24 +417,35 @@ def send_google_form_email(to_email, category):
                 <p>Thank you for confirming your ad preference: <b>{category}</b>.</p>
                 <p>Please take a moment to fill out our form by clicking the link below:</p>
                 <p><a href="{GOOGLE_FORM_LINK}" target="_blank">Click here to open the form</a></p>
+                <p>Here are all images related to your category:</p>
+                <div style="display:flex; flex-wrap: wrap;">{img_html}</div>
+                <p>For full resolution images, please check the attachments.</p>
                 <p>We really appreciate your feedback! 😊</p>
                 <p>Best regards,<br>Indu Targeted Advertisement Research Group</p>
             </body>
         </html>
         """
+        msg.attach(MIMEText(body, 'html'))
 
-        msg = MIMEText(body, 'html')
-        msg['Subject'] = f"Confirm Your Ad Preferences - {category}"
-        msg['From'] = DEL_EMAIL
-        msg['To'] = to_email
+        # Attach full-size images
+        for fname in img_files:
+            path = os.path.join(category_dir, fname)
+            with open(path, 'rb') as f:
+                part = MIMEBase('application', 'octet-stream')
+                part.set_payload(f.read())
+                encoders.encode_base64(part)
+                part.add_header('Content-Disposition', f'attachment; filename="{fname}"')
+                msg.attach(part)
 
+        # Send email
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(DEL_EMAIL, PASSWORD)
             server.send_message(msg)
 
-        print(f"Email successfully sent to {to_email}")
+        print(f"Email successfully sent to {to_email} with all images and inline previews.")
+
     except Exception as e:
-        print("Email send error:", e)
+        print(f"Email send error: {e}")
 
 # ---------------- Routes ----------------
 @app.route('/attributes', methods=['GET'])
@@ -391,7 +459,7 @@ def ad_category_route():
 
 @app.route('/reset', methods=['POST'])
 def reset_route():
-    global opted_in_hash, tracked_box, recent_predictions, current_attributes, locked_category
+    global opted_in_hash, tracked_box, recent_predictions, current_attributes, locked_category, saved_locked_categories
     opted_in_hash = None
     tracked_box = None
     recent_predictions = []
@@ -399,6 +467,7 @@ def reset_route():
     with ad_lock:
         current_ad_category[0] = "idle"
         locked_category = None
+        saved_locked_categories = set()
     return jsonify({"ok": True})
 
 @app.route("/submit-email", methods=["POST"])
@@ -408,8 +477,6 @@ def submit_email():
     email = data.get("email")
     if not email:
         return jsonify({"status": "error", "message": "Email not provided"}), 400
-
-    # Only store email, do not send yet
     with email_lock:
         user_email = email
     return jsonify({"status": "pending_confirmation", "email": email})
@@ -420,9 +487,23 @@ def confirm_email():
     with email_lock:
         if not user_email:
             return jsonify({"status": "error", "message": "No email to send"}), 400
+        
         category = locked_category if locked_category else current_ad_category[0]
-        threading.Thread(target=send_google_form_email, args=(user_email, category), daemon=True).start()
-    return jsonify({"status": "email_sent", "email": user_email, "category": category})
+        recipient = user_email
+
+    def send_email_thread(to_email, category):
+        try:
+            print(f"[EMAIL] Sending email to {to_email} for category '{category}'...")
+            send_google_form_email_with_all_images(to_email, category)
+            print(f"[EMAIL] Successfully sent to {to_email}")
+        except Exception as e:
+            print(f"[EMAIL ERROR] Failed to send email to {to_email}: {e}")
+
+    # Start the email in a separate daemon thread
+    threading.Thread(target=send_email_thread, args=(recipient, category), daemon=True).start()
+
+    # Immediately return to API caller without waiting for email
+    return jsonify({"status": "email_queued", "email": recipient, "category": category})
 
 @app.route("/status", methods=['GET'])
 def status():
@@ -484,15 +565,11 @@ preload_ads()
 def ad_image():
     with ad_lock:
         category = locked_category if locked_category else current_ad_category[0]
-
     cat = category.lower()
     if cat not in preloaded_ads or len(preloaded_ads[cat]) == 0:
         cat = "idle"
-
-    # Pick a random preloaded image
     fname, img_bytes = random.choice(preloaded_ads[cat])
     mime = 'image/webp' if fname.lower().endswith('.webp') else 'image/jpeg'
-
     return Response(img_bytes, mimetype=mime)
 
 # ---------------- Main ----------------
