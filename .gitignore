@@ -1,0 +1,12 @@
+#Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ---- Environment & Config ----
+.env
+.flaskenv
+.venv/
+venv/
+*.env
