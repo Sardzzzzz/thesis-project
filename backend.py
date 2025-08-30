@@ -1,62 +1,75 @@
-# ====================================================
-# Imports
-# ====================================================
-import os, time, random, threading
+import os
+import time
+import random
+import threading
 from flask import Flask, Response, jsonify, send_file, request
 from flask_cors import CORS
-import cv2, numpy as np, torch, torchvision
+import cv2
+import numpy as np
+import torch
+import torchvision
 from torchvision.transforms import functional as F
 from joblib import load
 from PIL import Image
 import imagehash
 from skimage.feature import local_binary_pattern, hog
-import psycopg2
-from dotenv import load_dotenv
-
-load_dotenv()
-
+import smtplib
+from email.mime.text import MIMEText
 
 # ---------------- Config / Toggles ----------------
-USE_RESNET_FOR_AGE_GENDER = False  # set True only if you have *_resnet.joblib SVMs
-FACE_CLASS_IDS = [1]               # COCO person class id for Faster-RCNN (person)
+USE_RESNET_FOR_AGE_GENDER = False
+FACE_CLASS_IDS = [1]
 SCORE_THRESHOLD = 0.7
 FACE_SIZE = (128, 128)
 LBP_RADIUS = 2
 LBP_POINTS = 8 * LBP_RADIUS
 LBP_METHOD = 'uniform'
-FRAME_CONFIRMATION_COUNT = 5  # majority vote frame window (tweak to taste)
-HASH_DISTANCE_TOL = 5         # perceptual hash distance threshold
-OPT_IN_TIMEOUT = 3.0          # seconds to reset opted-in person if lost
-FACE_LOST_GRACE = 1.0         # seconds to keep box after face disappears (smoothing)
+FRAME_CONFIRMATION_COUNT = 5
+HASH_DISTANCE_TOL = 5
+OPT_IN_TIMEOUT = 3.0
+FACE_LOST_GRACE = 1.0
 
 # ---------------- Paths ----------------
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = PROJECT_DIR
-
 ADS_DIR = os.path.join(MODEL_DIR, "public/ads")
 SAVED_FACES_DIR = os.path.join(MODEL_DIR, "saved_faces")
 os.makedirs(SAVED_FACES_DIR, exist_ok=True)
 
 # ---------------- Flask ----------------
 app = Flask(__name__)
-url = os.getenv("DATABASE_URL")
-connection = psycopg2.connect(url)
 CORS(app)
 
-current_attributes = {
-    "age": "Unknown",
-    "gender": "Unknown",
-    "skin": "Unknown"
-}
+# ---------------- Shared State ----------------
+current_attributes = {"age": "Unknown", "gender": "Unknown", "skin": "Unknown"}
+current_ad_category = ["idle"]
+ad_lock = threading.Lock()
+recent_predictions = []
+saved_face_hashes = set()
+opted_in_hash = None
+tracked_box = None
+last_valid_face_time = time.time()
+last_face_seen_time = time.time()
+locked_category = None
+user_email = None
+email_lock = threading.Lock()
+GOOGLE_FORM_LINK = "https://docs.google.com/forms/d/e/1FAIpQLSdYgqFi0wrjeXkCe2rYGsTKG8LqXshUX3dQjjM5MDNLVTrq6A/viewform"
+EMAIL_SEND_DELAY = 2.0
+
+# ---------------- Email Credentials ----------------
+DEL_EMAIL = "induadvertisementsystem@gmail.com"  # <- replace with your email
+PASSWORD = "oeqrhjmkfpzrvvbp"  # <- replace with your app password
+
+camera = cv2.VideoCapture(0)
+latest_frame = None
+latest_frame_lock = threading.Lock()
 
 # ---------------- Models ----------------
-# Detector (Faster-RCNN pretrained)
 model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
 model.eval()
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model.to(device)
 
-# Load SVMs (use joblib files in MODEL_DIR)
 svm_gender = None
 svm_age = None
 svm_skin = None
@@ -78,7 +91,6 @@ svm_age    = try_load_joblib("svm_age.joblib")
 svm_skin   = try_load_joblib("svm_skin.joblib")
 print("Loaded SVMs:", svm_gender is not None, svm_age is not None, svm_skin is not None)
 
-# Optional ResNet-based SVMs for Age/Gender
 svm_gender_resnet = None
 svm_age_resnet = None
 try:
@@ -92,40 +104,31 @@ except Exception as e:
     print("ResNet SVMs not loaded:", e)
     USE_RESNET_FOR_AGE_GENDER = False
 
-# ResNet18 (feature extractor)
 resnet_skin = torchvision.models.resnet18(weights=torchvision.models.ResNet18_Weights.DEFAULT)
-resnet_skin = torch.nn.Sequential(*list(resnet_skin.children())[:-1])  # global avg pool output
+resnet_skin = torch.nn.Sequential(*list(resnet_skin.children())[:-1])
 resnet_skin.eval()
 resnet_skin.to(device)
 
-# Haar cascade for faces
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
-# ---------------- Shared State ----------------
-current_ad_category = ["idle"]
-ad_lock = threading.Lock()
-recent_predictions = []
-saved_face_hashes = set()
-opted_in_hash = None  # holds the perceptual hash of current tracked person
-tracked_box = None    # (cx, cy, w, h)
-last_valid_face_time = time.time()
-last_face_seen_time = time.time()
-
-# New global: locked category (None means unlocked)
-locked_category = None
-
-# Camera + latest_frame sharing
-camera = cv2.VideoCapture(0)
-latest_frame = None
-latest_frame_lock = threading.Lock()
-
-# Initialize saved faces hash set from disk
+# ---------------- Init saved faces ----------------
 for category in os.listdir(SAVED_FACES_DIR):
     category_dir = os.path.join(SAVED_FACES_DIR, category)
     if os.path.isdir(category_dir):
         for fname in os.listdir(category_dir):
             if fname.lower().endswith(('.jpg', '.jpeg', '.png')):
                 saved_face_hashes.add(fname.split('.')[0])
+
+# ---------------- Preload ad images for instant delivery ----------------
+preloaded_ads = {}
+for cat in os.listdir(ADS_DIR):
+    cat_dir = os.path.join(ADS_DIR, cat)
+    if os.path.isdir(cat_dir):
+        files = [os.path.join(cat_dir, f) for f in os.listdir(cat_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))]
+        preloaded_ads[cat.lower()] = files
+# Ensure idle exists
+if 'idle' not in preloaded_ads:
+    preloaded_ads['idle'] = [os.path.join(ADS_DIR, 'idle', 'indu.png')]
 
 # ---------------- Utils ----------------
 def hash_face(face_array):
@@ -161,14 +164,13 @@ def extract_lbp_hog(face_gray):
 
 def resnet_embed(face_bgr_224):
     face_rgb = cv2.cvtColor(face_bgr_224, cv2.COLOR_BGR2RGB)
-    tensor = torchvision.transforms.functional.to_tensor(face_rgb).unsqueeze(0).to(device)
+    tensor = F.to_tensor(face_rgb).unsqueeze(0).to(device)
     with torch.no_grad():
         feat = resnet_skin(tensor).cpu().numpy().reshape(-1)
     return feat
 
 def classify_face(face_bgr):
     age_pred, gender_pred, skin_pred = "Unknown", "Unknown", "Unknown"
-
     try:
         if USE_RESNET_FOR_AGE_GENDER and svm_gender_resnet and svm_age_resnet:
             face_224 = cv2.resize(face_bgr, (224, 224))
@@ -180,14 +182,14 @@ def classify_face(face_bgr):
                 gray = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2GRAY)
                 gray_resized = cv2.resize(gray, FACE_SIZE)
                 feats = extract_lbp_hog(gray_resized)
-                gender_pred = svm_gender.predict(feats)[0]
-                age_pred = svm_age.predict(feats)[0]
+                if svm_gender: gender_pred = svm_gender.predict(feats)[0]
+                if svm_age: age_pred = svm_age.predict(feats)[0]
         else:
             gray = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2GRAY)
             gray_resized = cv2.resize(gray, FACE_SIZE)
             feats = extract_lbp_hog(gray_resized)
-            gender_pred = svm_gender.predict(feats)[0]
-            age_pred = svm_age.predict(feats)[0]
+            if svm_gender: gender_pred = svm_gender.predict(feats)[0]
+            if svm_age: age_pred = svm_age.predict(feats)[0]
 
         if svm_skin:
             face_gray = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2GRAY)
@@ -195,15 +197,13 @@ def classify_face(face_bgr):
             skin_pred = svm_skin.predict(feats_skin)[0]
     except Exception as e:
         print("Classification error:", e)
-
     return age_pred, gender_pred, skin_pred
 
 # ---------------- Detection Thread ----------------
 def face_detection_loop():
     global opted_in_hash, recent_predictions, current_ad_category, tracked_box
     global last_valid_face_time, last_face_seen_time, camera, latest_frame, locked_category
-
-    alpha = 0.7  # smoothing factor for tracked_box
+    alpha = 0.7
 
     while True:
         ret, frame = camera.read()
@@ -307,7 +307,6 @@ def face_detection_loop():
 
                     label = f"{age_pred.lower()}_{gender_pred.lower()}_{skin_pred.lower()}"
 
-                    # Save face deduplication
                     try:
                         face_gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
                         face_resized = cv2.resize(face_gray, FACE_SIZE)
@@ -332,21 +331,16 @@ def face_detection_loop():
                     except Exception as e:
                         print("Save face error:", e)
 
-                    # Append prediction (sliding window)
                     recent_predictions.append(label)
                     if len(recent_predictions) > FRAME_CONFIRMATION_COUNT:
                         recent_predictions.pop(0)
 
-                    # Majority check: only set a locked category if one isn't already locked
                     if len(recent_predictions) == FRAME_CONFIRMATION_COUNT and all(x == recent_predictions[0] for x in recent_predictions):
                         majority = recent_predictions[0]
                         with ad_lock:
                             if locked_category is None:
                                 locked_category = majority
                                 current_ad_category[0] = majority
-                            else:
-                                # already locked, do nothing (maintain locked_category)
-                                pass
 
         with latest_frame_lock:
             latest_frame = small_frame.copy()
@@ -355,6 +349,36 @@ def face_detection_loop():
 
 threading.Thread(target=face_detection_loop, daemon=True).start()
 
+# ---------------- Email Utils ----------------
+def send_google_form_email(to_email, category):
+    try:
+        time.sleep(EMAIL_SEND_DELAY)
+        body = f"""
+        <html>
+            <body>
+                <p>Hello!</p>
+                <p>Thank you for confirming your ad preference: <b>{category}</b>.</p>
+                <p>Please take a moment to fill out our form by clicking the link below:</p>
+                <p><a href="{GOOGLE_FORM_LINK}" target="_blank">Click here to open the form</a></p>
+                <p>We really appreciate your feedback! 😊</p>
+                <p>Best regards,<br>Indu Targeted Advertisement Research Group</p>
+            </body>
+        </html>
+        """
+
+        msg = MIMEText(body, 'html')
+        msg['Subject'] = f"Confirm Your Ad Preferences - {category}"
+        msg['From'] = DEL_EMAIL
+        msg['To'] = to_email
+
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(DEL_EMAIL, PASSWORD)
+            server.send_message(msg)
+
+        print(f"Email successfully sent to {to_email}")
+    except Exception as e:
+        print("Email send error:", e)
+
 # ---------------- Routes ----------------
 @app.route('/attributes', methods=['GET'])
 def get_attributes():
@@ -362,11 +386,8 @@ def get_attributes():
 
 @app.route('/ad-category', methods=['GET'])
 def ad_category_route():
-    # If locked_category is set, return it. Else return the current ad category.
     with ad_lock:
-        if locked_category is not None:
-            return jsonify({"category": locked_category})
-        return jsonify({"category": current_ad_category[0]})
+        return jsonify({"category": locked_category if locked_category else current_ad_category[0]})
 
 @app.route('/reset', methods=['POST'])
 def reset_route():
@@ -380,13 +401,47 @@ def reset_route():
         locked_category = None
     return jsonify({"ok": True})
 
+@app.route("/submit-email", methods=["POST"])
+def submit_email():
+    global user_email
+    data = request.json
+    email = data.get("email")
+    if not email:
+        return jsonify({"status": "error", "message": "Email not provided"}), 400
+
+    # Only store email, do not send yet
+    with email_lock:
+        user_email = email
+    return jsonify({"status": "pending_confirmation", "email": email})
+
+@app.route("/confirm-email", methods=["POST"])
+def confirm_email():
+    global user_email
+    with email_lock:
+        if not user_email:
+            return jsonify({"status": "error", "message": "No email to send"}), 400
+        category = locked_category if locked_category else current_ad_category[0]
+        threading.Thread(target=send_google_form_email, args=(user_email, category), daemon=True).start()
+    return jsonify({"status": "email_sent", "email": user_email, "category": category})
+
+@app.route("/status", methods=['GET'])
+def status():
+    return jsonify({"email": user_email, "category": current_ad_category[0]})
+
+@app.route("/reset-user", methods=["POST"])
+def reset_user():
+    global user_email
+    with email_lock:
+        user_email = None
+    return jsonify({"status": "reset"})
+
 @app.route('/video_feed')
 def video_feed():
     def gen_frames():
         global latest_frame
         while True:
             with latest_frame_lock:
-                frame = None if latest_frame is None else latest_frame.copy()
+                frame = latest_frame.copy() if latest_frame is not None else None
             if frame is None:
                 idle = np.zeros((480, 640, 3), dtype=np.uint8)
                 _, buffer = cv2.imencode('.jpg', idle)
@@ -400,144 +455,46 @@ def video_feed():
             time.sleep(0.03)
     return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
+# ---------------- Preload Ads ----------------
+preloaded_ads = {}
+
+def preload_ads():
+    global preloaded_ads
+    categories = os.listdir(ADS_DIR)
+    for cat in categories:
+        cat_dir = os.path.join(ADS_DIR, cat)
+        if os.path.isdir(cat_dir):
+            preloaded_ads[cat.lower()] = []
+            for fname in os.listdir(cat_dir):
+                if fname.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                    path = os.path.join(cat_dir, fname)
+                    try:
+                        with open(path, 'rb') as f:
+                            preloaded_ads[cat.lower()].append((fname, f.read()))
+                    except:
+                        continue
+    # Fallback idle ad
+    idle_path = os.path.join(ADS_DIR, "idle/indu.png")
+    with open(idle_path, 'rb') as f:
+        preloaded_ads["idle"] = [("indu.png", f.read())]
+
+preload_ads()
+
 @app.route('/ad-image')
 def ad_image():
     with ad_lock:
-        category = current_ad_category[0]
+        category = locked_category if locked_category else current_ad_category[0]
 
-    cat_dir = os.path.join(ADS_DIR, category)
-    if not os.path.isdir(cat_dir):
-        cat_dir = os.path.join(ADS_DIR, 'idle')
+    cat = category.lower()
+    if cat not in preloaded_ads or len(preloaded_ads[cat]) == 0:
+        cat = "idle"
 
-    try:
-        images = [f for f in os.listdir(cat_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif'))]
-    except Exception:
-        images = []
+    # Pick a random preloaded image
+    fname, img_bytes = random.choice(preloaded_ads[cat])
+    mime = 'image/webp' if fname.lower().endswith('.webp') else 'image/jpeg'
 
-    if not images:
-        idle_dir = os.path.join(ADS_DIR, 'idle')
-        images = [f for f in os.listdir(idle_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif'))]
-        cat_dir = idle_dir
+    return Response(img_bytes, mimetype=mime)
 
-    selected = random.choice(images)
-    return send_file(os.path.join(cat_dir, selected), mimetype='image/jpeg')
-
-
-#--POSTGRESQL QUERIES--
-
-INSERT_DEMOGRAPHIC_RECORD = ("""
-    INSERT INTO demographics (age_range, skin_color, gender)
-    VALUES (%s, %s, %s)
-    RETURNING id;
-    """
-)
-INSERT_SALE_RECORD = ("""
-    INSERT INTO products (product, price, demographic, used, date)
-    VALUES (%s, %s, %s, %s, %s) RETURNING id;
-""")
-
-FETCH_SALES = ("SELECT * FROM products;")
-
-FETCH_DEMOGRAPHICS = (""" 
-    SELECT age_range || '-' || skin_color || '-' || gender AS demographic,
-    COUNT(*) AS total
-    FROM demographics
-    GROUP BY age_range, skin_color, gender;
-""")
-
-FETCH_FEEDBACK = "SELECT email, message, date FROM feedback;"
-#--API ENDPOINT FOR MAIN SYSTEM--
-#INSERT DEMOGRAPHIC endpoint
-@app.post('/api/demographic')
-def createDemographic():
-    data = request.get_json()
-    age_range = data["age_range"]
-    skin_color = data["skin_color"]
-    gender = data["gender"]
-
-    with connection:
-        with connection.cursor() as cursor:
-            cursor.execute(INSERT_DEMOGRAPHIC_RECORD,(age_range, skin_color, gender))
-            demographicID = cursor.fetchone()[0]
-
-    return {"id": demographicID, "message": "Demographic data recorded"}, 201
-
-#--API ENDPOINTS FOR ADMIN-- 
-@app.route('/', methods=['GET'])
-def home():
-    return "Home page"
-
-#Fetch DEMOGRAHPICS endpoint
-@app.get('/api/get-demographic')
-def getDemographics():
-    with connection:
-        with connection.cursor() as cursor:
-            cursor.execute(FETCH_DEMOGRAPHICS)
-            rows = cursor.fetchall()
-
-    demographics = [
-        {
-            "demographic": row[0],
-            "total": row[1]
-        }
-        for row in rows
-    ]
-    return jsonify(demographics)
-
-#Record Sales Endpoint
-@app.post('/api/sales')
-def createSale():
-    data = request.get_json()
-    product = data["product"]
-    price = data["price"]
-    demographic = data["demographic"]
-    used = data["used"]
-    date = data["date"]
-    with connection:
-        with connection.cursor() as cursor:
-            cursor.execute(INSERT_SALE_RECORD, ((product, price, demographic, used, date,)))
-            saleID = cursor.fetchone()[0]
-    return {"id": saleID, "message": f"Product sold on {date}"}, 201
-
-#Fetch Sales records Endpoint
-@app.get('/api/get-sales')
-def getSales():
-    with connection:
-        with connection.cursor() as cursor:
-            cursor.execute(FETCH_SALES)
-            rows = cursor.fetchall()
-    sales = [
-        {   
-            "id": row[0],
-            "product": row[1],
-            "price": float(row[2]),
-            "demographic": row[3],
-            "used": row[4],
-            "date": row[5].isoformat()
-        }
-        for row in rows
-    ]
-    return jsonify(sales)
-
-#Fetch FEEDBACK endpoint
-@app.get('/api/get-feedback')
-def getFeedback():
-    with connection:
-        with connection.cursor() as cursor:
-            cursor.execute(FETCH_FEEDBACK)
-            rows = cursor.fetchall()
-    feedback = [
-        {
-            "email": row[0],
-            "message": row[1],
-            "date": row[2].isoformat()
-        }
-        for row in rows
-    ]
-    return jsonify(feedback)
-
-if __name__ == '__main__':
-    app.run(port=5000, debug=True, use_reloader=False)
-
-
-
+# ---------------- Main ----------------
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=False)
