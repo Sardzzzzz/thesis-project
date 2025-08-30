@@ -35,6 +35,8 @@ SELECT age_range || '-' || skin_color || '-' || gender AS demographic,
                 GROUP BY age_range, skin_color, gender;
 """)
 
+FETCH_FEEDBACK = "SELECT email, message, date FROM feedback;"
+
 CORS(app)
 
 # --- Model Loading ---
@@ -226,6 +228,23 @@ def getSales():
         for row in rows
     ]
     return jsonify(sales)
+
+#Fetch FEEDBACK endpoint
+@app.get('/api/get-feedback')
+def getFeedback():
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(FETCH_FEEDBACK)
+            rows = cursor.fetchall()
+    feedback = [
+        {
+            "email": row[0],
+            "message": row[1],
+            "date": row[2].isoformat()
+        }
+        for row in rows
+    ]
+    return jsonify(feedback)
 
 if __name__ == '__main__':
     app.run(port=5000, debug=True, use_reloader=False)
