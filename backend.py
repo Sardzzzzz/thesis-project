@@ -184,6 +184,7 @@ def createSale():
             saleID = cursor.fetchone()[0]
     return {"id": saleID, "message": f"Product sold on {date}"}, 201
 
+#Fetch Sales records Endpoint
 @app.get('/api/get-sales')
 def getSales():
     with connection:
