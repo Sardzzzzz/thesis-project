@@ -21,17 +21,19 @@ url = os.getenv("DATABASE_URL")
 connection = psycopg2.connect(url)
 
 #--POSTGRESQL QUERIES--
-INSERT_DEMOGRAPHIC_RECORD = """
-INSERT INTO demographics (age_range, skin_color, gender)
-VALUES (%s, %s, %s)
-RETURNING id;
-"""
+
+INSERT_DEMOGRAPHIC_RECORD = ("""
+    INSERT INTO demographics (age_range, skin_color, gender)
+    VALUES (%s, %s, %s)
+    RETURNING id;
+    """
+)
 INSERT_SALE_RECORD = ("""
     INSERT INTO products (product, price, demographic, used, date)
     VALUES (%s, %s, %s, %s, %s) RETURNING id;
 """)
 
-FETCH_SALES = ("SELECT product, price, demographic, used, date FROM products;")
+FETCH_SALES = ("SELECT * FROM products;")
 
 FETCH_DEMOGRAPHICS = (""" 
 SELECT age_range || '-' || skin_color || '-' || gender AS demographic,
@@ -239,12 +241,13 @@ def getSales():
             cursor.execute(FETCH_SALES)
             rows = cursor.fetchall()
     sales = [
-        {
-            "product": row[0],
-            "price": float(row[1]),
-            "demographic": row[2],
-            "used": row[3],
-            "date": row[4].isoformat()
+        {   
+            "id": row[0],
+            "product": row[1],
+            "price": float(row[2]),
+            "demographic": row[3],
+            "used": row[4],
+            "date": row[5].isoformat()
         }
         for row in rows
     ]
