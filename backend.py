@@ -21,6 +21,11 @@ url = os.getenv("DATABASE_URL")
 connection = psycopg2.connect(url)
 
 #--POSTGRESQL QUERIES--
+INSERT_DEMOGRAPHIC_RECORD = """
+INSERT INTO demographics (age_range, skin_color, gender)
+VALUES (%s, %s, %s)
+RETURNING id;
+"""
 INSERT_SALE_RECORD = ("""
     INSERT INTO products (product, price, demographic, used, date)
     VALUES (%s, %s, %s, %s, %s) RETURNING id;
@@ -173,7 +178,23 @@ def ad_image():
     img_path = os.path.join(ads_dir, images[0])  # always serve the first image (not random)
     return send_file(img_path, mimetype='image/jpeg')
 
-#API ENDPOINTS FOR ADMIN 
+#--API ENDPOINT FOR MAIN SYSTEM--
+#INSERT DEMOGRAPHIC endpoint
+@app.post('/api/demographic')
+def createDemographic():
+    data = request.get_json()
+    age_range = data["age_range"]
+    skin_color = data["skin_color"]
+    gender = data["gender"]
+
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(INSERT_DEMOGRAPHIC_RECORD,(age_range, skin_color, gender))
+            demographicID = cursor.fetchone()[0]
+
+    return {"id": demographicID, "message": "Demographic data recorded"}, 201
+
+#--API ENDPOINTS FOR ADMIN-- 
 @app.route('/', methods=['GET'])
 def home():
     return "Home page"
