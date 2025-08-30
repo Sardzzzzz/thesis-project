@@ -28,6 +28,13 @@ INSERT_SALE_RECORD = ("""
 
 FETCH_SALES = ("SELECT product, price, demographic, used, date FROM products;")
 
+FETCH_DEMOGRAPHICS = (""" 
+SELECT age_range || '-' || skin_color || '-' || gender AS demographic,
+                       COUNT(*) AS total
+                FROM demographics
+                GROUP BY age_range, skin_color, gender;
+""")
+
 CORS(app)
 
 # --- Model Loading ---
@@ -168,6 +175,23 @@ def ad_image():
 @app.route('/', methods=['GET'])
 def home():
     return "Home page"
+
+#Fetch DEMOGRAHPICS endpoint
+@app.get('/api/get-demographic')
+def getDemographics():
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(FETCH_DEMOGRAPHICS)
+            rows = cursor.fetchall()
+
+    demographics = [
+        {
+            "demographic": row[0],
+            "total": row[1]
+        }
+        for row in rows
+    ]
+    return jsonify(demographics)
 
 #Record Sales Endpoint
 @app.post('/api/sales')
