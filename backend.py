@@ -18,6 +18,10 @@ from email.mime.text import MIMEText
 import base64
 from PIL import Image
 import io
+import psycopg2
+from dotenv import load_dotenv
+from datetime import date
+load_dotenv()
 
 # ---------------- Config / Toggles ----------------
 USE_RESNET_FOR_AGE_GENDER = False
@@ -41,6 +45,8 @@ os.makedirs(SAVED_FACES_DIR, exist_ok=True)
 
 # ---------------- Flask ----------------
 app = Flask(__name__)
+url = os.getenv("DATABASE_URL")
+connection = psycopg2.connect(url)
 CORS(app)
 
 # ---------------- Shared State ----------------
@@ -504,6 +510,35 @@ def confirm_email():
 
     # Immediately return to API caller without waiting for email
     return jsonify({"status": "email_queued", "email": recipient, "category": category})
+
+@app.route("/api/feedback", methods=["POST"])
+def submit_feedback():
+    data = request.get_json()
+    email = data.get("email")
+    message = data.get("message")
+
+    # Validate input
+    if not email or not message or not message.strip():
+        return jsonify({"error": "Email and feedback are required"}), 400
+
+    try:
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO feedback (email, message, date)
+                    VALUES (%s, %s, %s)
+                    RETURNING id
+                    """,
+                    (email, message, date.today())
+                )
+                feedback_id = cursor.fetchone()[0]
+
+        return jsonify({"id": feedback_id, "message": "Feedback submitted!"}), 201
+
+    except Exception as e:
+        print("Error submitting feedback:", e)  # Log error to console
+        return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/status", methods=['GET'])
 def status():
