@@ -786,7 +786,34 @@ def getProducts():
         for row in rows
     ]
     return jsonify(products)
+#
+@app.post("/api/auth")
+def login():
+    data = request.get_json()
+    email = data.get("email")
+    password = data.get("password")
 
+    if not email or not password:
+        return jsonify({"message": "Missing Email or Password"}), 400
+
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT admin_id, email, password FROM admins WHERE email=%s AND password=%s LIMIT 1",
+                (email, password)
+            )
+            row = cursor.fetchone()
+
+    if row:
+        token = os.urandom(16).hex()  # temporary token
+        return jsonify({
+            "isAdmin": True,
+            "token": token,
+            "admin_id": row["admin_id"],
+            "email": row["email"]
+        }), 200
+
+    return jsonify({"message": "Unauthorized"}), 401
 #Fetch FEEDBACK endpoint
 @app.get('/api/get-feedback')
 def getFeedback():
