@@ -513,6 +513,38 @@ def confirm_email():
     return jsonify({"status": "email_queued", "email": recipient, "category": category})
 
 # Record Agree and Disagree terms and services
+#Records visit for that certain demographic, WHEN PRESSED YES  = RECORD
+@app.route("/confirm-visit", methods=["POST"])
+def confirm_visit():
+    try:
+        data = request.get_json()
+        category = data.get("category")
+
+        if not category:
+            return jsonify({"error": "No category provided"}), 400
+
+        parts = category.split("_")
+        if len(parts) != 3:
+            return jsonify({"error": "Invalid category format"}), 400
+
+        age, gender, skin = parts
+
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO demographics (age_range, skin_color, gender)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (age, skin, gender)
+                )
+
+        return jsonify({"message": "Visit recorded successfully."}), 200
+
+    except Exception as e:
+        print(f"Error inserting visit: {e}")
+        return jsonify({"error": "Failed to record visit"}), 500
+    
 @app.post("/api/consent")
 def insert_consent():
     data = request.get_json()
