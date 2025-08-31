@@ -393,7 +393,7 @@ def send_google_form_email_with_all_images(to_email, category):
                 match = re.match(r"(.+)_([\d.]+)$", fname.rsplit('.', 1)[0])
                 if match:
                     name = match.group(1).replace("_", " ")
-                    price = f"${float(match.group(2)):.2f}"
+                    price = f"₱{float(match.group(2)):.2f}"
                 else:
                     name = fname.rsplit('.', 1)[0].replace("_", " ")
                     price = "Unknown"
