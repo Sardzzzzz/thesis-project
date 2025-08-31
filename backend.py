@@ -600,6 +600,119 @@ def video_feed():
             time.sleep(0.03)
     return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
+#--POSTGRESQL QUERIES--
+
+INSERT_DEMOGRAPHIC_RECORD = ("""
+    INSERT INTO demographics (age_range, skin_color, gender)
+    VALUES (%s, %s, %s)
+    RETURNING id;
+    """
+)
+INSERT_SALE_RECORD = ("""
+    INSERT INTO products (product, price, demographic, used, date)
+    VALUES (%s, %s, %s, %s, %s) RETURNING id;
+""")
+
+FETCH_SALES = ("SELECT * FROM products;")
+
+FETCH_DEMOGRAPHICS = (""" 
+    SELECT age_range || '-' || skin_color || '-' || gender AS demographic,
+    COUNT(*) AS total
+    FROM demographics
+    GROUP BY age_range, skin_color, gender;
+""")
+
+FETCH_FEEDBACK = "SELECT email, message, date FROM feedback;"
+#--API ENDPOINT FOR MAIN SYSTEM--
+#INSERT DEMOGRAPHIC endpoint
+@app.post('/api/demographic')
+def createDemographic():
+    data = request.get_json()
+    age_range = data["age_range"]
+    skin_color = data["skin_color"]
+    gender = data["gender"]
+
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(INSERT_DEMOGRAPHIC_RECORD,(age_range, skin_color, gender))
+            demographicID = cursor.fetchone()[0]
+
+    return {"id": demographicID, "message": "Demographic data recorded"}, 201
+
+#--API ENDPOINTS FOR ADMIN-- 
+@app.route('/', methods=['GET'])
+def home():
+    return "Home page"
+
+#Fetch DEMOGRAHPICS endpoint
+@app.get('/api/get-demographic')
+def getDemographics():
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(FETCH_DEMOGRAPHICS)
+            rows = cursor.fetchall()
+
+    demographics = [
+        {
+            "demographic": row[0],
+            "total": row[1]
+        }
+        for row in rows
+    ]
+    return jsonify(demographics)
+
+#Record Sales Endpoint
+@app.post('/api/sales')
+def createSale():
+    data = request.get_json()
+    product = data["product"]
+    price = data["price"]
+    demographic = data["demographic"]
+    used = data["used"]
+    date = data["date"]
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(INSERT_SALE_RECORD, ((product, price, demographic, used, date,)))
+            saleID = cursor.fetchone()[0]
+    return {"id": saleID, "message": f"Product sold on {date}"}, 201
+
+#Fetch Sales records Endpoint
+@app.get('/api/get-sales')
+def getSales():
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(FETCH_SALES)
+            rows = cursor.fetchall()
+    sales = [
+        {   
+            "id": row[0],
+            "product": row[1],
+            "price": float(row[2]),
+            "demographic": row[3],
+            "used": row[4],
+            "date": row[5].isoformat()
+        }
+        for row in rows
+    ]
+    return jsonify(sales)
+
+#Fetch FEEDBACK endpoint
+@app.get('/api/get-feedback')
+def getFeedback():
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute(FETCH_FEEDBACK)
+            rows = cursor.fetchall()
+    feedback = [
+        {
+            "email": row[0],
+            "message": row[1],
+            "date": row[2].isoformat()
+        }
+        for row in rows
+    ]
+    return jsonify(feedback)
+
 # ---------------- Preload Ads ----------------
 preloaded_ads = {}
 
