@@ -1,42 +1,44 @@
-product_name,price,age_range,gender_classification,skin
-ACID BLACK INDU,"₱350 - ₱450",teen,male,dark
-Black White x Rust Brown White Stripes Tee's,"₱450 - ₱500",adult,male,dark
-CLASSIC STRIPED TEES,"₱450 - ₱550",teen,female,light
-COMBI ASH GRAY BLACKNECK,"₱430 - ₱480",adult,female,light
-COMBI JADE BLUE BLACKNECK,"₱430 - ₱480",adult,female,light
-Combi Red x Black Goods x INDU Plain Crewneck,"₱430 - ₱500",teen,male,light
-COMBination Applegreen Yellowneck INDU Crewneck Shirt,"₱430 - ₱500",teen,female,dark
-Combination Crewneck Navyblue and Yellow,"₱430",adult,female,light
-COMBINATION SLATEBLUE BLACKNECK,"₱430 - ₱530",teen,female,dark
-Dipaning Altee INDU Shirts,"₱300",teen,female,light
-EMBROIDERED INDU LOGO TEE,"₱550 - ₱600",adult,male,dark
-GALAXY EXPLORATION INDU SHIRT,"₱680 - ₱750",teen,male,dark
-Goods Supply Crewneck INDU Shirt,"₱400",adult,female,light
-HGG SCRIPT TEES BY INDU,"₱350 - ₱400",adult,male,dark
-HMGRWN GOODS ANGELES CITY CREWNECK INDU Shirt,"₱530 - ₱580",adult,male,dark
-HMGRWN INDU Glow in the Dark Crewneck Shirt,"₱470",teen,male,dark
-HMGRWN INDU Longsleeve,"₱530 - ₱580",adult,female,dark
-INDU BLACK WHITE AND OFF WHITE,"₱350",adult,female,light
-INDU Black w/ White Outline Shirt,"₱300",teen,male,dark
-INDU BLACK,"₱350 - ₱400",adult,female,light
-INDU Black,"₱350 - ₱400",teen,female,light
-INDU Classic Arc Logo Shirt,"₱400 - ₱450",adult,male,dark
-INDU COTTON CANDY,"₱450 - ₱500",teen,female,dark
-INDU CREST GLOW IN THE DARK SHIRT,"₱470 - ₱530",adult,male,light
-INDU EMBROIDERED BOX LOGO SHIRT,"₱500 - ₱550",teen,female,dark
-INDU Embroidered Box Logo Tee,"₱500 - ₱550",adult,female,light
-INDU FINE LINE,"₱470",adult,male,dark
-INDU GLOWING ASTRO BOY SHIRT,"₱470 - ₱500",teen,female,dark
-INDU HALO-HALO TEE,"₱430",adult,male,light
-INDU INDUSTYLE Shirt,"₱400",teen,male,dark
-INDU LOGO TYPE,"₱450 - ₱500",adult,female,light
-INDU NAVY,"₱350 - ₱400",teen,female,dark
-INDU Red Box Shirt,"₱400 - ₱450",adult,male,light
-INDU Shirt,"₱350 - ₱400",teen,male,dark
-INDU STARGAZER TEE,"₱470",adult,female,dark
-INDU White Goods Tee,"₱350 - ₱400",teen,male,light
-Plain Army Green Crewneck INDU Shirt,"₱350",adult,female,light
-Plain Black Crewneck INDU Shirt,"₱350",teen,male,dark
-Plain Maroon Crewneck INDU Shirt,"₱350 - ₱380",adult,female,dark
-Plain Navyblue Crewneck INDU Shirt,"₱350",teen,female,light
-Plain White Crewneck INDU Shirt,"₱350 - ₱380",adult,male,dark
+product_name,price,gender_classification,age_range
+ACID BLACK INDU,₱350 - ₱450,,
+Black White x Rust Brown White Stripes Tee's,₱450 - ₱500,,
+CLASSIC STRIPED TEES,₱450 - ₱550,,
+COMBI ASH GRAY BLACKNECK,₱430 - ₱480,,
+COMBI JADE BLUE BLACKNECK,₱430 - ₱480,,
+Combi Red x Black Goods x INDU Plain Crewneck,₱430 - ₱500,,
+COMBination Applegreen Yellowneck INDU Crewneck Shirt,₱430 - ₱500,,
+Combination Crewneck Navyblue and Yellow,₱430,,
+COMBINATION SLATEBLUE BLACKNECK,₱430 - ₱530,,
+Dipaning Altee INDU Shirts,₱300,,
+EMBROIDERED INDU LOGO TEE,₱550 - ₱600,,
+GALAXY EXPLORATION INDU SHIRT,₱680 - ₱750,,
+Goods Supply Crewneck INDU Shirt,₱400,,
+HGG SCRIPT TEES BY INDU,₱350 - ₱400,,
+HMGRWN GOODS ANGELES CITY CREWNECK INDU Shirt,₱530 - ₱580,,
+HMGRWN INDU Glow in the Dark Crewneck Shirt,₱470,,
+HMGRWN INDU Longsleeve,₱530 - ₱580,,
+INDU BLACK WHITE AND OFF WHITE,₱350,,
+INDU CAMOUFLAGE & TRI COLOUR BACKPACK,₱550,,
+INDU Camouflage Beltbag,₱400,,
+INDU COMBI OLIVE GREEN KHAKI GRAY AND OFF WHITE,₱430,,
+INDU KHAKI BEIGE LIGHT CHOCO AND RUST BROWN,₱350 - ₱450,,
+INDU KULITAN SCRIPT LONG SLEEVES,₱550 - ₱650,,
+INDU MAROON RED MAROON AND RED,₱350,,
+INDU MOSS GREEN JADE GREEN CACHA AND GRAY,₱350 - ₱450,,
+INDU Nakisam ALAYA SHIRTS,₱450 - ₱550,,
+INDU REPRESENT CARGO SHORTS,₱400 - ₱450,,
+INDU RISE ABOVE BLACK WHITE MOSS KHAKI PEACH AND CHOCO,₱450 - ₱550,,
+INDU SCRIPT CREWNECK TEE'S,₱450,,
+INDU STREETWEAR COLLECTIONS,₱500 - ₱630,,
+INNERKID MARUPOK SHIRT,₱350,,
+Lugud Shirt,₱500,,
+MANTUN KANG BRAND NEW INDU SHIRT,₱450,,
+ORANGE PLAIN INDU Crewneck Shirt,₱350 - ₱400,,
+PacMan Crewneck Shirt,₱450,,
+Pampanga Represent INDU Crewneck Shirt,₱470,,
+PASTEL CREWNECK SHIRTS,₱450,,
+Ringer Tees by INDU,₱390,,
+SICLUBAN INDU HOODIE,₱1500,,
+Squid Game INDU,₱450 - ₱550,,
+STUNA MARS INDU SHIRT,₱450,,
+YAKU NAMU ING LUGURAN MU INDU SHIRT,₱450,,
+
