@@ -769,6 +769,24 @@ def getSales():
     ]
     return jsonify(sales)
 
+#Fetch products for dropdownlist
+@app.get('/api/get-products')
+def getProducts():
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT id, name, price FROM products ORDER BY name")
+            rows = cursor.fetchall()
+    
+    products = [
+        {
+            "id": row[0],
+            "name": row[1],
+            "price": float(row[2])  # convert numeric to float for JSON
+        }
+        for row in rows
+    ]
+    return jsonify(products)
+
 #Fetch FEEDBACK endpoint
 @app.get('/api/get-feedback')
 def getFeedback():
