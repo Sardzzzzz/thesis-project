@@ -539,6 +539,42 @@ def insert_consent():
                 """)
 
     return jsonify({"message": f"Recorded {choice}"})
+
+# Fetch Consent
+@app.route('/api/consent-latest', methods=['GET'])
+def get_consent_trends():
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT SUM(agree) AS total_agree, SUM(disagree) AS total_disagree
+                FROM consent_trends;
+            """)
+            result = cursor.fetchone()
+            total_agree = result[0] or 0
+            total_disagree = result[1] or 0
+
+    # Format response for Recharts PieChart
+    data = [
+        {"name": "Agree", "value": total_agree},
+        {"name": "Disagree", "value": total_disagree}
+    ]
+
+    return {"data": data, "message": "Consent trends fetched successfully"}, 200
+
+@app.route("/api/consent-trend-daily", methods=["GET"])
+def get_daily_consent_trends():
+    with connection:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT date, agree, disagree
+                FROM consent_trends
+                ORDER BY date ASC;
+            """)
+            rows = cursor.fetchall()
+
+    data = [{"date": str(row[0]), "agree": row[1], "disagree": row[2]} for row in rows]
+    return {"data": data, "message": "Daily consent trends fetched successfully"}, 200
+
 # Insert Feedback
 @app.route("/api/feedback", methods=["POST"])
 def submit_feedback():
@@ -608,12 +644,14 @@ INSERT_DEMOGRAPHIC_RECORD = ("""
     RETURNING id;
     """
 )
-INSERT_SALE_RECORD = ("""
-    INSERT INTO products (product, price, demographic, used, date)
-    VALUES (%s, %s, %s, %s, %s) RETURNING id;
-""")
+INSERT_SALE_RECORD = """
+INSERT INTO sales (product, price, demographic, used, date)
+VALUES (%s, %s, %s, %s, %s)
+RETURNING id;
+"""
 
-FETCH_SALES = ("SELECT * FROM products;")
+
+FETCH_SALES = ("SELECT * FROM sales;")
 
 FETCH_DEMOGRAPHICS = (""" 
     SELECT age_range || '-' || skin_color || '-' || gender AS demographic,
@@ -670,11 +708,14 @@ def createSale():
     demographic = data["demographic"]
     used = data["used"]
     date = data["date"]
+    
     with connection:
         with connection.cursor() as cursor:
-            cursor.execute(INSERT_SALE_RECORD, ((product, price, demographic, used, date,)))
+            cursor.execute(INSERT_SALE_RECORD, (product, price, demographic, used, date))
             saleID = cursor.fetchone()[0]
-    return {"id": saleID, "message": f"Product sold on {date}"}, 201
+
+    return jsonify({"id": saleID, "message": f"Product sold on {date}"}), 201
+
 
 #Fetch Sales records Endpoint
 @app.get('/api/get-sales')
