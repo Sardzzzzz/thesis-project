@@ -329,6 +329,7 @@ def face_detection_loop():
                             if locked_category is None:
                                 locked_category = majority
                                 current_ad_category[0] = majority
+                                
 
                                 # Save face only once per locked category
                                 if locked_category not in saved_locked_categories:
@@ -511,6 +512,34 @@ def confirm_email():
     # Immediately return to API caller without waiting for email
     return jsonify({"status": "email_queued", "email": recipient, "category": category})
 
+# Record Agree and Disagree terms and services
+@app.post("/api/consent")
+def insert_consent():
+    data = request.get_json()
+    choice = data.get("choice")  # Expecting "agree" or "disagree"
+
+    if choice not in ["agree", "disagree"]:
+        return jsonify({"error": "Invalid choice, must be 'agree' or 'disagree'"}), 400
+
+    with connection:
+        with connection.cursor() as cursor:
+            if choice == "agree":
+                cursor.execute("""
+                    INSERT INTO consent_trends (date, agree, disagree)
+                    VALUES (CURRENT_DATE, 1, 0)
+                    ON CONFLICT (date) DO UPDATE
+                    SET agree = consent_trends.agree + 1;
+                """)
+            else:
+                cursor.execute("""
+                    INSERT INTO consent_trends (date, agree, disagree)
+                    VALUES (CURRENT_DATE, 0, 1)
+                    ON CONFLICT (date) DO UPDATE
+                    SET disagree = consent_trends.disagree + 1;
+                """)
+
+    return jsonify({"message": f"Recorded {choice}"})
+# Insert Feedback
 @app.route("/api/feedback", methods=["POST"])
 def submit_feedback():
     data = request.get_json()
