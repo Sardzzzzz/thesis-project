@@ -31,3 +31,14 @@ teen_female_dark/
 adult_female_mid-light/
 ETC.
 idle/
+
+
+---------------------------------------------------------------------------
+ # Download images
+>> Invoke-WebRequest -Uri http://images.cocodataset.org/zips/val2017.zip -OutFile val2017.zip
+>> Expand-Archive -Path val2017.zip -DestinationPath .
+>>
+>> # Download annotations
+>> Invoke-WebRequest -Uri http://images.cocodataset.org/annotations/annotations_trainval2017.zip -OutFile annotations_trainval2017.zip
+>> Expand-Archive -Path annotations_trainval2017.zip -DestinationPath .
+>>
