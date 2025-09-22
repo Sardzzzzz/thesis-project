@@ -867,6 +867,20 @@ def ad_image():
     mime = 'image/webp' if fname.lower().endswith('.webp') else 'image/jpeg'
     return Response(img_bytes, mimetype=mime)
 
+DYNAMICS_FOLDER = os.path.join(os.getcwd(), "public", "ads", "dynamic")
+
+@app.route('/dynamic-ad')
+def dynamic_ad():
+    #List all files in the folder
+    files = [f for f in os.listdir(DYNAMICS_FOLDER) if os.path.isfile(os.path.join(DYNAMICS_FOLDER, f))]
+    if not files:
+        return "No ads available", 404
+
+    #Pick a random file
+    filename = random.choice(files)
+    filepath = os.path.join(DYNAMICS_FOLDER, filename)
+
+    return send_file(filepath)
 # ---------------- Main ----------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)
