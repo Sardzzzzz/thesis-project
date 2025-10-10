@@ -867,7 +867,7 @@ def ad_image():
     mime = 'image/webp' if fname.lower().endswith('.webp') else 'image/jpeg'
     return Response(img_bytes, mimetype=mime)
 
-DYNAMICS_FOLDER = os.path.join(os.getcwd(), "public", "ads", "dynamic")
+DYNAMICS_FOLDER = os.path.join(os.getcwd(), "thesis-project", "public", "ads", "dynamic")
 
 @app.route('/dynamic-ad')
 def dynamic_ad():
