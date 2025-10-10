@@ -1,0 +1,12 @@
+Flask
+flask-cors
+opencv-python-headless
+torch
+torchvision
+numpy
+joblib
+Pillow
+scikit-image
+python-dotenv
+psycopg2-binary
+imagehash
