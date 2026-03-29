@@ -1,5 +1,8 @@
 # thesis-project
 SmartTarget : Context-aware Advertising Using Camera Sensors in Clothing Stores Using Faster R-CNN and SVM
+BACKEND - https://github.com/Sardzzzzz/thesis-project
+FRONTEND - https://github.com/dlsntos/smart-target-frontend
+ADMIN - https://github.com/dlsntos/smart-target-admin-dashboard
 
 Test if GPU is located:
 
